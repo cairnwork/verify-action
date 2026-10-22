@@ -126,7 +126,8 @@ run_verifier() {
       last_code="VERIFIER_ERROR"; last_detail="verifier output is not a JSON object"; last_verdict="ERROR"
       continue
     fi
-    if printf "%s" "$output" | jq -e '.ok == true' >/dev/null 2>&1; then
+    # success requires both the verifier's exit status 0 and ok == true in its JSON
+    if [[ $status -eq 0 ]] && printf "%s" "$output" | jq -e '.ok == true' >/dev/null 2>&1; then
       local s_sha
       s_sha=$(printf "%s" "$output" | jq -r '.statement_sha256 // empty' 2>/dev/null || true)
       if [[ "$s_sha" =~ ^[0-9a-f]{64}$ ]]; then

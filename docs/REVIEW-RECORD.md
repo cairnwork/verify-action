@@ -30,5 +30,17 @@ pool, reviewed and edited by the author). Integration owner: workspace-bb.
   `SIGNATURE_INVALID` because it matches signatures by the keyid derived from
   the public key; the wrapper additionally blanks the `keyid` output.
 
-Follow-ups: pin `cairnwork-ref` to a commit ≥ 5819a8c and read
-`cairnwork-attest verify --json` instead of scraping text.
+## verify --json (main 8fc16901b0771c22576f3e3c2b1a52c684ad093b)
+
+Delta ed7315a..8fc1690: `run_verifier` reads `cairnwork-attest verify --json`
+(code and statement_sha256 whitelisted before reaching `GITHUB_OUTPUT`; an
+exit-2 or non-JSON result for one key is recorded and the next key is tried;
+all error paths map to `VERIFIER_ERROR`), `cairnwork-ref` must be ≥ 5819a8c,
+self-test adds the pre-`--json` commit case and a statement-sha256 equality
+check (17 cases).
+
+- **Independent Claude review** (same reviewer, dispatched by the integration
+  owner): **ACCEPT at 8fc16901b0771c22576f3e3c2b1a52c684ad093b** (CI run
+  39810885838 green). Non-blocking hardening: success must also require the
+  verifier's exit status 0, not only `.ok == true` — applied in the next
+  commit.
