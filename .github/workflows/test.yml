@@ -261,9 +261,12 @@ jobs:
 
       - name: Assert keyid injection sanitized
         run: |
-          test "${{ steps.test_keyid_injection.outcome }}" = "success"
-          test "${{ steps.test_keyid_injection.outputs.verdict }}" = "VERIFIED"
-          test "${{ steps.test_keyid_injection.outputs.code }}" = "OK"
+          # The verifier matches signatures by the keyid derived from the public key, so a
+          # tampered keyid is rejected as SIGNATURE_INVALID (observed on CI); the wrapper must
+          # still blank the keyid output and never emit a forged verdict line.
+          test "${{ steps.test_keyid_injection.outcome }}" = "failure"
+          test "${{ steps.test_keyid_injection.outputs.verdict }}" = "REJECTED"
+          test "${{ steps.test_keyid_injection.outputs.code }}" = "SIGNATURE_INVALID"
           test "${{ steps.test_keyid_injection.outputs.keyid }}" = ""
 
       - name: Check-base exact success
