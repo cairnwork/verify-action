@@ -122,7 +122,12 @@ jobs:
       - name: Clean up local note before notes fetch failure test
         run: |
           cd target
-          git notes --ref refs/notes/cairnwork remove 7cd79ab8ac46ed466a345fa6e4de315e20f6f78d || true
+          git -c user.name=test -c user.email=test@example.invalid \
+            notes --ref refs/notes/cairnwork remove 7cd79ab8ac46ed466a345fa6e4de315e20f6f78d
+          # the later cases rely on no note being present
+          if git notes --ref refs/notes/cairnwork show 7cd79ab8ac46ed466a345fa6e4de315e20f6f78d >/dev/null 2>&1; then
+            echo "note still present"; exit 1
+          fi
 
       - name: Notes fetch failure verification
         id: test_notes_fetch_failure
