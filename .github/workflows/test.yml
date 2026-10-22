@@ -97,7 +97,8 @@ jobs:
       - name: Add git note to target repo
         run: |
           cd target
-          git notes --ref refs/notes/cairnwork add -F "$GITHUB_WORKSPACE/fixtures/demo-target-pr4/bundle.json" 7cd79ab8ac46ed466a345fa6e4de315e20f6f78d
+          git -c user.name=test -c user.email=test@example.invalid \
+            notes --ref refs/notes/cairnwork add -F "$GITHUB_WORKSPACE/fixtures/demo-target-pr4/bundle.json" 7cd79ab8ac46ed466a345fa6e4de315e20f6f78d
 
       - name: Notes path verification
         id: test_notes_path
