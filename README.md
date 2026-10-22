@@ -63,7 +63,12 @@ When `fetch-notes` is `true`, the action runs `git fetch origin "+<notes-ref>:<n
 
 ## Keys
 
-Provide the public key through a repository or organization variable (for example, `${{ vars.CAIRNWORK_PUBLIC_KEY }}`) or read it from a file on a protected branch.
+Prefer a repository or organization variable holding the PEM text (`${{ vars.CAIRNWORK_PUBLIC_KEY }}`). If the key is kept as a file on a protected branch, copy it out of the checkout first (for example to `$RUNNER_TEMP`) in a step that runs before the action, and pass that absolute path — files inside `repo-path` are rejected with `BAD_INPUT`:
+
+```yaml
+- name: Copy public key
+  run: cp .github/cairnwork-public-key.pem "$RUNNER_TEMP/cairnwork-public-key.pem"
+```
 
 Never trust a public key committed in the pull request under review: an untrusted pull request author could supply their own keypair alongside an unauthorized attestation. When `public-key` or `core-identity` are given as file paths, they must be absolute paths and must not resolve (via `realpath`) to any path inside `repo-path` (the PR checkout); otherwise the action fails with `BAD_INPUT`. Inline PEM text is unaffected by this path restriction.
 
@@ -119,7 +124,7 @@ Trade-off: `ancestor` allows the target branch to advance after an attestation i
 | --- | --- | --- |
 | `OK` | `VERIFIED` | Attestation verified against public key and git history. |
 | `BAD_INPUT` | `ERROR` | Input validation failure (non-40-hex SHA, missing required input, invalid format, non-array `pr-labels`, or key path inside `repo-path`). |
-| `MISSING_TOOL` | `ERROR` | Required command-line utility (`jq`, `git`, or `base64`) is not found on the runner. |
+| `MISSING_TOOL` | `ERROR` | Required command-line utility (`jq`, `git`, `base64`, `awk`, or at least one of `sha256sum` or `shasum`) is not found on the runner. |
 | `INSTALL_FAILED` | `ERROR` | Fetching `cairnwork` repository or syncing virtual environment dependencies via `uv sync` failed. |
 | `NOTES_FETCH_FAILED` | `ERROR` | Git fetch of the notes ref from origin failed. |
 | `BUNDLE_MISSING` | `REJECTED` / `SKIPPED` | No bundle file or note found for candidate commit (`SKIPPED` when not required). |

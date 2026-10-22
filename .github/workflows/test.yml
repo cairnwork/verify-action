@@ -261,13 +261,10 @@ jobs:
 
       - name: Assert keyid injection sanitized
         run: |
+          test "${{ steps.test_keyid_injection.outcome }}" = "success"
+          test "${{ steps.test_keyid_injection.outputs.verdict }}" = "VERIFIED"
+          test "${{ steps.test_keyid_injection.outputs.code }}" = "OK"
           test "${{ steps.test_keyid_injection.outputs.keyid }}" = ""
-          if [ "${{ steps.test_keyid_injection.outcome }}" = failure ]; then
-            test "${{ steps.test_keyid_injection.outputs.verdict }}" != VERIFIED
-          fi
-          if [ "${{ steps.test_keyid_injection.outputs.verdict }}" = VERIFIED ]; then
-            test "${{ steps.test_keyid_injection.outcome }}" = success
-          fi
 
       - name: Check-base exact success
         id: test_check_base_exact_success
@@ -306,3 +303,66 @@ jobs:
         run: |
           test "${{ steps.test_check_base_exact_failure.outcome }}" = "failure"
           test "${{ steps.test_check_base_exact_failure.outputs.code }}" = "BASE_NOT_IN_TARGET"
+
+      - name: Copy key into repo path
+        run: cp "$GITHUB_WORKSPACE/fixtures/demo-target-pr4/public-key.pem" target/pubkey-in-repo.pem
+
+      - name: Public key inside repo-path
+        id: test_public_key_inside_repo
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ github.workspace }}/target/pubkey-in-repo.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert public key inside repo-path
+        run: |
+          test "${{ steps.test_public_key_inside_repo.outcome }}" = "failure"
+          test "${{ steps.test_public_key_inside_repo.outputs.verdict }}" = "ERROR"
+          test "${{ steps.test_public_key_inside_repo.outputs.code }}" = "BAD_INPUT"
+
+      - name: Symlink key into repo path
+        run: ln -s "$GITHUB_WORKSPACE/target/pubkey-in-repo.pem" "$RUNNER_TEMP/link.pem"
+
+      - name: Public key symlink into repo-path
+        id: test_public_key_symlink_into_repo
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ runner.temp }}/link.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert public key symlink into repo-path
+        run: |
+          test "${{ steps.test_public_key_symlink_into_repo.outcome }}" = "failure"
+          test "${{ steps.test_public_key_symlink_into_repo.outputs.verdict }}" = "ERROR"
+          test "${{ steps.test_public_key_symlink_into_repo.outputs.code }}" = "BAD_INPUT"
+
+      - name: Cairnwork-ref not 40-hex
+        id: test_cairnwork_ref_not_40_hex
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: main
+
+      - name: Assert cairnwork-ref not 40-hex
+        run: |
+          test "${{ steps.test_cairnwork_ref_not_40_hex.outcome }}" = "failure"
+          test "${{ steps.test_cairnwork_ref_not_40_hex.outputs.verdict }}" = "ERROR"
+          test "${{ steps.test_cairnwork_ref_not_40_hex.outputs.code }}" = "BAD_INPUT"

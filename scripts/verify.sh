@@ -135,9 +135,12 @@ run_verifier() {
 }
 
 # 1. Tool check
-for tool in jq git base64; do
+for tool in jq git base64 awk; do
   command -v "$tool" >/dev/null 2>&1 || fail "MISSING_TOOL" "required tool missing: $tool" "ERROR"
 done
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+  fail "MISSING_TOOL" "required tool missing: sha256sum or shasum" "ERROR"
+fi
 
 REPO_REALPATH="$(realpath .)"
 
@@ -188,6 +191,7 @@ else
   if [[ "$FETCH_NOTES" == "true" ]]; then
     if ! git fetch origin "+${NOTES_REF}:${NOTES_REF}" 2>/dev/null; then
       [[ "$IS_REQUIRED" == "true" ]] && fail "NOTES_FETCH_FAILED" "git fetch origin +${NOTES_REF}:${NOTES_REF} failed" "ERROR"
+      skip "NOTES_FETCH_FAILED" "git fetch origin +${NOTES_REF}:${NOTES_REF} failed"
     fi
   fi
   BUNDLE_FILE="${RUNNER_TEMP:-/tmp}/cairnwork-bundle.json"
