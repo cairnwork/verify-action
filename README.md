@@ -147,4 +147,4 @@ Pin this action by commit SHA rather than mutable tags. Similarly, specify `cair
 
 ## Status
 
-v0, private preview.
+v0. Public since 2026-10-23. Pin by commit SHA; tags are published for convenience (`v0.1.0`) but a SHA is the only immutable reference.
