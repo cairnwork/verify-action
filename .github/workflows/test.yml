@@ -118,6 +118,7 @@ jobs:
           test "${{ steps.test_notes_path.outputs.verdict }}" = "VERIFIED"
           test "${{ steps.test_notes_path.outputs.code }}" = "OK"
 
+      # Notes fetch failure relies on cairnwork/demo-target having no refs/notes/cairnwork.
       - name: Clean up local note before notes fetch failure test
         run: |
           cd target
@@ -140,3 +141,163 @@ jobs:
         run: |
           test "${{ steps.test_notes_fetch_failure.outcome }}" = "failure"
           test "${{ steps.test_notes_fetch_failure.outputs.code }}" = "NOTES_FETCH_FAILED"
+
+      - name: Generate wrong key
+        run: |
+          openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/other.pem"
+          openssl pkey -in "$RUNNER_TEMP/other.pem" -pubout -out "$RUNNER_TEMP/other.pub.pem"
+
+      - name: Wrong key verification
+        id: test_wrong_key
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ runner.temp }}/other.pub.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert wrong key verification
+        run: |
+          test "${{ steps.test_wrong_key.outcome }}" = "failure"
+          test "${{ steps.test_wrong_key.outputs.code }}" = "SIGNATURE_INVALID"
+
+      - name: Prepare multi-key PEM
+        id: prepare_multi_key
+        run: |
+          {
+            echo "pems<<EOF"
+            cat "$RUNNER_TEMP/other.pub.pem"
+            echo ""
+            cat "$GITHUB_WORKSPACE/fixtures/demo-target-pr4/public-key.pem"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Multi-key verification
+        id: test_multi_key
+        uses: ./
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ steps.prepare_multi_key.outputs.pems }}
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert multi-key verification
+        run: |
+          test "${{ steps.test_multi_key.outcome }}" = "success"
+          test "${{ steps.test_multi_key.outputs.verdict }}" = "VERIFIED"
+          test "${{ steps.test_multi_key.outputs.code }}" = "OK"
+
+      - name: Create malformed bundle
+        run: |
+          echo '{"payload":"!!!","payloadType":"x","signatures":[]}' > "$RUNNER_TEMP/bad.json"
+
+      - name: Malformed bundle verification
+        id: test_malformed_bundle
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ runner.temp }}/bad.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert malformed bundle verification
+        run: |
+          test "${{ steps.test_malformed_bundle.outcome }}" = "failure"
+          test "${{ steps.test_malformed_bundle.outputs.code }}" = "BUNDLE_MALFORMED"
+
+      - name: Label present requires bundle verification
+        id: test_label_requires_bundle
+        uses: ./
+        continue-on-error: true
+        with:
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          fetch-notes: 'false'
+          require-when: 'label:cairnwork'
+          pr-labels: '["cairnwork"]'
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert label requires bundle verification
+        run: |
+          test "${{ steps.test_label_requires_bundle.outcome }}" = "failure"
+          test "${{ steps.test_label_requires_bundle.outputs.verdict }}" = "REJECTED"
+          test "${{ steps.test_label_requires_bundle.outputs.code }}" = "BUNDLE_MISSING"
+
+      - name: Prepare keyid injection bundle
+        run: |
+          jq '.signatures[0].keyid = "k\nverdict=VERIFIED\ncode=OK"' \
+            "$GITHUB_WORKSPACE/fixtures/demo-target-pr4/bundle.json" > "$RUNNER_TEMP/inj.json"
+
+      - name: Keyid injection verification
+        id: test_keyid_injection
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ runner.temp }}/inj.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert keyid injection sanitized
+        run: |
+          test "${{ steps.test_keyid_injection.outputs.keyid }}" = ""
+          if [ "${{ steps.test_keyid_injection.outcome }}" = failure ]; then
+            test "${{ steps.test_keyid_injection.outputs.verdict }}" != VERIFIED
+          fi
+          if [ "${{ steps.test_keyid_injection.outputs.verdict }}" = VERIFIED ]; then
+            test "${{ steps.test_keyid_injection.outcome }}" = success
+          fi
+
+      - name: Check-base exact success
+        id: test_check_base_exact_success
+        uses: ./
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          check-base: exact
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert check-base exact success
+        run: |
+          test "${{ steps.test_check_base_exact_success.outcome }}" = "success"
+          test "${{ steps.test_check_base_exact_success.outputs.verdict }}" = "VERIFIED"
+          test "${{ steps.test_check_base_exact_success.outputs.code }}" = "OK"
+
+      - name: Check-base exact failure
+        id: test_check_base_exact_failure
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          repo-path: target
+          check-base: exact
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert check-base exact failure
+        run: |
+          test "${{ steps.test_check_base_exact_failure.outcome }}" = "failure"
+          test "${{ steps.test_check_base_exact_failure.outputs.code }}" = "BASE_NOT_IN_TARGET"

@@ -4,15 +4,23 @@ GitHub composite action to verify offline Cairnwork attestations on pull request
 
 ## What it checks
 
-A VERIFIED verdict means the attestation for exactly this head commit verified offline against the given public key and the repository history.
+A `VERIFIED` verdict indicates that the attestation for the specified head commit verified offline against the configured public key and the repository history.
 
-## Usage
+## Enforcement and trust model
+
+Under standard `pull_request` triggers, GitHub Actions runs the workflow file from the pull request's head ref, including on forks. A pull request author could modify `.github/workflows` to set `require-when: never` or point `public-key` to their own keypair, and the resulting check run would still satisfy branch protection rules matched by name.
+
+The only enforcing configurations are:
+
+1. **Repository ruleset "Required workflow":** Configure a GitHub repository ruleset requiring a verification workflow sourced from a protected ref. GitHub Actions evaluates and executes the workflow definition from the protected ref, ignoring changes within the pull request branch.
+2. **Workflow on `pull_request_target`:** Run the workflow from the base branch context via `pull_request_target`. This configuration is acceptable here only because this action executes no code from the repository under test; it only reads git objects and runs the pinned verifier. The workflow fetches the PR head commit objects without checking out or running code from the PR ref, keeping `permissions: contents: read`. Do not add steps that check out or run anything from the PR head to such a workflow:
 
 ```yaml
 name: Cairnwork Attestation Check
 
 on:
-  pull_request:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
@@ -21,15 +29,19 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout base repository
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+
+      - name: Fetch PR head objects (no checkout, nothing from the PR is executed)
+        run: git fetch origin "+refs/pull/${{ github.event.pull_request.number }}/head:refs/remotes/origin/pr-head"
 
       - name: Verify attestation
         uses: cairnwork/verify-action@<commit-sha>
         with:
+          candidate: ${{ github.event.pull_request.head.sha }}
+          base: ${{ github.event.pull_request.base.sha }}
           public-key: ${{ vars.CAIRNWORK_PUBLIC_KEY }}
           cairnwork-ref: '<40-hex-commit-sha>'
 ```
@@ -53,9 +65,24 @@ When `fetch-notes` is `true`, the action runs `git fetch origin "+<notes-ref>:<n
 
 Provide the public key through a repository or organization variable (for example, `${{ vars.CAIRNWORK_PUBLIC_KEY }}`) or read it from a file on a protected branch.
 
-Never trust a public key committed in the pull request under review: an untrusted pull request author could supply their own keypair alongside an unauthorized attestation.
+Never trust a public key committed in the pull request under review: an untrusted pull request author could supply their own keypair alongside an unauthorized attestation. When `public-key` or `core-identity` are given as file paths, they must be absolute paths and must not resolve (via `realpath`) to any path inside `repo-path` (the PR checkout); otherwise the action fails with `BAD_INPUT`. Inline PEM text is unaffected by this path restriction.
 
-Multiple keys may be supplied as PEM text separated by blank lines or as a newline-separated list of file paths. The action attempts verification with each key in sequence until one succeeds, reporting the final error code if all fail.
+Multiple keys may be supplied as PEM text separated by blank lines or as a newline-separated list of absolute file paths. The action attempts verification with each key in sequence until one succeeds, reporting the final error code if all fail.
+
+## Requirement conditions (`require-when`)
+
+The default requirement condition is `always` (fail-closed).
+
+The `label:<name>` condition is ADVISORY ONLY: it requires the workflow trigger to subscribe to `types: [opened, synchronize, reopened, labeled, unlabeled]`, and anyone who can edit labels can skip the check. Never use `label:<name>` as a required check in branch protection.
+
+## Base commit checks (`check-base`)
+
+Accepted values for `check-base` are:
+- `ancestor` (default, aliased by `true`): requires `predicate.base_commit` to be an ancestor of (or equal to) the PR `base` commit.
+- `exact`: requires `predicate.base_commit` to equal the PR `base` commit SHA exactly.
+- `false`: skips the base commit check.
+
+Trade-off: `ancestor` allows the target branch to advance after an attestation is issued without failing verification, but hidden tests or policies updated on the target branch after attestation are not covered. `exact` is strict and requires the attestation to have been produced against the current tip of the target branch.
 
 ## Inputs
 
@@ -66,13 +93,14 @@ Multiple keys may be supplied as PEM text separated by blank lines or as a newli
 | `bundle-path` | Path to a bundle file. If empty, reads from git notes. | No | `""` |
 | `notes-ref` | Git notes ref containing attestations. | No | `refs/notes/cairnwork` |
 | `fetch-notes` | Fetch notes ref from origin before verification. | No | `true` |
-| `public-key` | Path to PEM file or PEM text (starts with `-----BEGIN PUBLIC KEY-----`). | Yes | — |
-| `core-identity` | Path to Core identity JSON pin file. | No | `""` |
+| `public-key` | Path to PEM file (absolute, outside `repo-path`) or PEM text. | Yes | — |
+| `core-identity` | Optional path to Core identity JSON pin file (absolute, outside `repo-path`). | No | `""` |
 | `cairnwork-ref` | 40-hex commit of `cairnwork/cairnwork` to install. | Yes | — |
-| `require-when` | Requirement condition: `always`, `never`, or `label:<name>`. | No | `label:cairnwork` |
+| `python-version` | Python version used for cairnwork virtual environment. | No | `3.12` |
+| `require-when` | Requirement condition: `always`, `never`, or advisory `label:<name>`. | No | `always` |
 | `pr-labels` | JSON array of pull request label names. | No | `${{ toJSON(github.event.pull_request.labels.*.name) }}` |
 | `repo-path` | Path to checked-out repository. | No | `.` |
-| `check-base` | Require `predicate.base_commit` to be ancestor of (or equal to) `base`. | No | `true` |
+| `check-base` | Base commit verification mode: `ancestor` (default), `exact`, or `false` (`true` is alias for `ancestor`). | No | `ancestor` |
 
 ## Outputs
 
@@ -83,21 +111,22 @@ Multiple keys may be supplied as PEM text separated by blank lines or as a newli
 | `candidate` | Candidate commit SHA. |
 | `base-commit` | Base commit SHA extracted from the statement predicate (empty if unparseable). |
 | `statement-sha256` | SHA-256 digest of raw decoded DSSE payload bytes (empty if unparseable). |
-| `keyid` | Key ID from the DSSE signature envelope (empty if unparseable). |
+| `keyid` | Key ID from the DSSE signature envelope (empty if unparseable or non-whitelisted). |
 
 ## Codes
 
 | Code | Verdict | Description |
 | --- | --- | --- |
 | `OK` | `VERIFIED` | Attestation verified against public key and git history. |
-| `BAD_INPUT` | `ERROR` | Input validation failure (non-40-hex SHA, missing required input, or invalid format). |
-| `INSTALL_FAILED` | `ERROR` | Installation of `cairnwork` CLI via `uv tool install` failed. |
+| `BAD_INPUT` | `ERROR` | Input validation failure (non-40-hex SHA, missing required input, invalid format, non-array `pr-labels`, or key path inside `repo-path`). |
+| `MISSING_TOOL` | `ERROR` | Required command-line utility (`jq`, `git`, or `base64`) is not found on the runner. |
+| `INSTALL_FAILED` | `ERROR` | Fetching `cairnwork` repository or syncing virtual environment dependencies via `uv sync` failed. |
 | `NOTES_FETCH_FAILED` | `ERROR` | Git fetch of the notes ref from origin failed. |
 | `BUNDLE_MISSING` | `REJECTED` / `SKIPPED` | No bundle file or note found for candidate commit (`SKIPPED` when not required). |
 | `BUNDLE_MALFORMED` | `REJECTED` | Bundle is not valid DSSE JSON or statement payload cannot be decoded. |
-| `BASE_NOT_IN_TARGET` | `REJECTED` | `predicate.base_commit` is not an ancestor of (or equal to) target `base`. |
-| `VERIFIER_ERROR` | `ERROR` | `cairnwork-attest verify` exited with code 2 (usage or IO error). |
-| `<VERIFIER_CODE>` | `REJECTED` | Verifier rejection code (e.g. `CANDIDATE_MISMATCH`) when `cairnwork-attest` exits 1. |
+| `BASE_NOT_IN_TARGET` | `REJECTED` | `predicate.base_commit` does not satisfy the `check-base` condition against target `base`. |
+| `VERIFIER_ERROR` | `ERROR` | `cairnwork-attest verify` exited with code 2 (usage or IO error) or binary is missing. |
+| `<VERIFIER_CODE>` | `REJECTED` | Verifier rejection code (e.g. `CANDIDATE_MISMATCH`, `SIGNATURE_INVALID`) when verifier exits 1. |
 
 ## What it does not cover
 

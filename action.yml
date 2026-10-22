@@ -35,10 +35,14 @@ inputs:
   cairnwork-ref:
     description: '40-hex commit of cairnwork/cairnwork to install'
     required: true
+  python-version:
+    description: 'Python version for cairnwork virtualenv'
+    required: false
+    default: '3.12'
   require-when:
     description: 'Requirement condition: always | never | label:<name>'
     required: false
-    default: 'label:cairnwork'
+    default: 'always'
   pr-labels:
     description: 'JSON array of PR label names'
     required: false
@@ -48,9 +52,9 @@ inputs:
     required: false
     default: '.'
   check-base:
-    description: 'Require predicate.base_commit to be ancestor of base'
+    description: 'Base check mode: ancestor (default) | exact | false'
     required: false
-    default: 'true'
+    default: 'ancestor'
 
 outputs:
   verdict:
@@ -83,6 +87,7 @@ runs:
       shell: bash
       env:
         CAIRNWORK_REF: ${{ inputs.cairnwork-ref }}
+        PYTHON_VERSION: ${{ inputs.python-version }}
       run: |
         if ! [[ "$CAIRNWORK_REF" =~ ^[0-9a-f]{40}$ ]]; then
           echo "verdict=ERROR" >> "$GITHUB_OUTPUT"
@@ -90,18 +95,41 @@ runs:
           echo "::error::BAD_INPUT: cairnwork-ref must be a 40-hex commit SHA"
           exit 1
         fi
-        if ! uv tool install --force --from "git+https://github.com/cairnwork/cairnwork.git@$CAIRNWORK_REF" cairnwork; then
+        SRC_DIR="${RUNNER_TEMP:-/tmp}/cairnwork-src"
+        rm -rf "$SRC_DIR"
+        mkdir -p "$SRC_DIR"
+        if ! (
+          cd "$SRC_DIR" && \
+          git init -q && \
+          git fetch -q --depth 1 https://github.com/cairnwork/cairnwork.git "$CAIRNWORK_REF" && \
+          git checkout -q FETCH_HEAD
+        ); then
           echo "verdict=ERROR" >> "$GITHUB_OUTPUT"
           echo "code=INSTALL_FAILED" >> "$GITHUB_OUTPUT"
-          echo "::error::INSTALL_FAILED: failed to install cairnwork@$CAIRNWORK_REF"
+          echo "::error::INSTALL_FAILED: failed to fetch cairnwork@$CAIRNWORK_REF"
           exit 1
         fi
+        if ! uv sync --frozen --no-dev --project "$SRC_DIR" --python "$PYTHON_VERSION"; then
+          echo "verdict=ERROR" >> "$GITHUB_OUTPUT"
+          echo "code=INSTALL_FAILED" >> "$GITHUB_OUTPUT"
+          echo "::error::INSTALL_FAILED: failed to sync cairnwork dependencies"
+          exit 1
+        fi
+        VERIFIER_BIN="$SRC_DIR/.venv/bin/cairnwork-attest"
+        if [[ ! -x "$VERIFIER_BIN" ]]; then
+          echo "verdict=ERROR" >> "$GITHUB_OUTPUT"
+          echo "code=INSTALL_FAILED" >> "$GITHUB_OUTPUT"
+          echo "::error::INSTALL_FAILED: verifier binary not found at $VERIFIER_BIN"
+          exit 1
+        fi
+        echo "verifier-bin=$VERIFIER_BIN" >> "$GITHUB_OUTPUT"
 
     - name: Run verification
       id: verify
       shell: bash
       working-directory: ${{ inputs.repo-path }}
       env:
+        CAIRNWORK_ATTEST_BIN: ${{ steps.install.outputs.verifier-bin }}
         INPUT_CANDIDATE: ${{ inputs.candidate }}
         INPUT_BASE: ${{ inputs.base }}
         INPUT_BUNDLE_PATH: ${{ inputs.bundle-path }}
