@@ -32,12 +32,14 @@ jobs:
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
           repo-path: target
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert positive verification
         run: |
           test "${{ steps.test_positive.outputs.verdict }}" = "VERIFIED"
           test "${{ steps.test_positive.outputs.code }}" = "OK"
+          expected_sha=$(jq -r .payload "$GITHUB_WORKSPACE/fixtures/demo-target-pr4/bundle.json" | base64 -d | sha256sum | awk '{print $1}')
+          test "${{ steps.test_positive.outputs.statement-sha256 }}" = "$expected_sha"
 
       - name: Negative candidate verification
         id: test_negative_candidate
@@ -50,7 +52,7 @@ jobs:
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
           repo-path: target
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert negative candidate verification
         run: |
@@ -68,7 +70,7 @@ jobs:
           base: '0000000000000000000000000000000000000001'
           repo-path: target
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert base check verification
         run: |
@@ -86,7 +88,7 @@ jobs:
           fetch-notes: 'false'
           require-when: 'label:cairnwork'
           pr-labels: '[]'
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert skip path verification
         run: |
@@ -110,7 +112,7 @@ jobs:
           repo-path: target
           fetch-notes: 'false'
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert notes path verification
         run: |
@@ -140,7 +142,7 @@ jobs:
           repo-path: target
           fetch-notes: 'true'
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert notes fetch failure
         run: |
@@ -163,7 +165,7 @@ jobs:
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
           repo-path: target
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert wrong key verification
         run: |
@@ -191,7 +193,7 @@ jobs:
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
           repo-path: target
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert multi-key verification
         run: |
@@ -214,7 +216,7 @@ jobs:
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
           repo-path: target
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert malformed bundle verification
         run: |
@@ -233,7 +235,7 @@ jobs:
           fetch-notes: 'false'
           require-when: 'label:cairnwork'
           pr-labels: '["cairnwork"]'
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert label requires bundle verification
         run: |
@@ -257,7 +259,7 @@ jobs:
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
           repo-path: target
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert keyid injection sanitized
         run: |
@@ -280,7 +282,7 @@ jobs:
           repo-path: target
           check-base: exact
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert check-base exact success
         run: |
@@ -300,7 +302,7 @@ jobs:
           repo-path: target
           check-base: exact
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert check-base exact failure
         run: |
@@ -321,7 +323,7 @@ jobs:
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
           repo-path: target
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert public key inside repo-path
         run: |
@@ -343,7 +345,7 @@ jobs:
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
           repo-path: target
           require-when: always
-          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Assert public key symlink into repo-path
         run: |
@@ -369,3 +371,22 @@ jobs:
           test "${{ steps.test_cairnwork_ref_not_40_hex.outcome }}" = "failure"
           test "${{ steps.test_cairnwork_ref_not_40_hex.outputs.verdict }}" = "ERROR"
           test "${{ steps.test_cairnwork_ref_not_40_hex.outputs.code }}" = "BAD_INPUT"
+
+      - name: Cairnwork-ref predates --json
+        id: test_cairnwork_ref_predates_json
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert cairnwork-ref predates --json
+        run: |
+          test "${{ steps.test_cairnwork_ref_predates_json.outcome }}" = "failure"
+          test "${{ steps.test_cairnwork_ref_predates_json.outputs.verdict }}" = "ERROR"
+          test "${{ steps.test_cairnwork_ref_predates_json.outputs.code }}" = "VERIFIER_ERROR"

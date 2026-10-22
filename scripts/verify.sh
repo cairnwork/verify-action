@@ -109,29 +109,41 @@ prepare_keys() {
 }
 
 run_verifier() {
-  local bundle="$1" verified=false last_exit=0 last_stdout="" last_code=""
+  local bundle="$1" kf last_code="VERIFIER_REJECTED" last_detail="" last_verdict="REJECTED"
   for kf in "${KEY_FILES[@]}"; do
-    local cmd=("$VERIFIER_BIN" verify "$bundle" --public-key "$kf" --repo . --candidate "$CANDIDATE")
+    local cmd=("$VERIFIER_BIN" verify "$bundle" --public-key "$kf" --repo . --candidate "$CANDIDATE" --json)
     [[ -n "$CORE_IDENTITY" ]] && cmd+=(--core-identity "$CORE_IDENTITY")
     set +e
     local output; output=$("${cmd[@]}")
     local status=$?
     set -e
-    if [[ $status -eq 0 ]]; then verified=true; break; fi
-    last_exit=$status; last_stdout="$output"
-    last_code=$(printf "%s" "$output" | cut -d: -f1 | tr -d '[:space:]\r\n')
-  done
-  if [[ "$verified" == "true" ]]; then success
-  elif [[ $last_exit -eq 2 ]]; then fail "VERIFIER_ERROR" "verifier returned usage or IO error" "ERROR"
-  else
-    if ! [[ "$last_code" =~ ^[A-Z_]{1,64}$ ]]; then
-      last_code="VERIFIER_REJECTED"
+    # exit 2 (usage/IO) or non-JSON stdout for one key: remember it, try the next key
+    if [[ $status -eq 2 ]]; then
+      last_code="VERIFIER_ERROR"; last_detail="verifier returned usage or IO error"; last_verdict="ERROR"
+      continue
     fi
-    local detail="${last_stdout#"$last_code": }"
-    [[ "$detail" == "$last_stdout" ]] && detail="${last_stdout#"$last_code":}"
-    detail=$(printf "%s" "$detail" | tr -d '\r\n')
-    fail "$last_code" "${detail:-verification failed}" "REJECTED"
-  fi
+    if ! printf "%s" "$output" | jq -e 'type=="object"' >/dev/null 2>&1; then
+      last_code="VERIFIER_ERROR"; last_detail="verifier output is not a JSON object"; last_verdict="ERROR"
+      continue
+    fi
+    if printf "%s" "$output" | jq -e '.ok == true' >/dev/null 2>&1; then
+      local s_sha
+      s_sha=$(printf "%s" "$output" | jq -r '.statement_sha256 // empty' 2>/dev/null || true)
+      if [[ "$s_sha" =~ ^[0-9a-f]{64}$ ]]; then
+        STATEMENT_SHA256="$s_sha"
+      fi
+      success
+    fi
+    local j_code
+    j_code=$(printf "%s" "$output" | jq -r '.code // empty' 2>/dev/null || true)
+    if ! [[ "$j_code" =~ ^[A-Z_]{1,64}$ ]]; then
+      j_code="VERIFIER_REJECTED"
+    fi
+    last_code="$j_code"; last_verdict="REJECTED"
+    last_detail=$(printf "%s" "$output" | jq -r 'if .detail == null then "" else (.detail | tostring) end' 2>/dev/null || true)
+    last_detail=$(printf "%s" "$last_detail" | tr -d '\r\n')
+  done
+  fail "$last_code" "${last_detail:-verification failed}" "$last_verdict"
 }
 
 # 1. Tool check

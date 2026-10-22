@@ -100,7 +100,7 @@ Trade-off: `ancestor` allows the target branch to advance after an attestation i
 | `fetch-notes` | Fetch notes ref from origin before verification. | No | `true` |
 | `public-key` | Path to PEM file (absolute, outside `repo-path`) or PEM text. | Yes | — |
 | `core-identity` | Optional path to Core identity JSON pin file (absolute, outside `repo-path`). | No | `""` |
-| `cairnwork-ref` | 40-hex commit of `cairnwork/cairnwork` to install. | Yes | — |
+| `cairnwork-ref` | 40-hex commit of `cairnwork/cairnwork` to install (must be at or after `5819a8c56e19fb32d597f8213a9961f46c3307d4`). | Yes | — |
 | `python-version` | Python version used for cairnwork virtual environment. | No | `3.12` |
 | `require-when` | Requirement condition: `always`, `never`, or advisory `label:<name>`. | No | `always` |
 | `pr-labels` | JSON array of pull request label names. | No | `${{ toJSON(github.event.pull_request.labels.*.name) }}` |
@@ -130,8 +130,10 @@ Trade-off: `ancestor` allows the target branch to advance after an attestation i
 | `BUNDLE_MISSING` | `REJECTED` / `SKIPPED` | No bundle file or note found for candidate commit (`SKIPPED` when not required). |
 | `BUNDLE_MALFORMED` | `REJECTED` | Bundle is not valid DSSE JSON or statement payload cannot be decoded. |
 | `BASE_NOT_IN_TARGET` | `REJECTED` | `predicate.base_commit` does not satisfy the `check-base` condition against target `base`. |
-| `VERIFIER_ERROR` | `ERROR` | `cairnwork-attest verify` exited with code 2 (usage or IO error) or binary is missing. |
-| `<VERIFIER_CODE>` | `REJECTED` | Verifier rejection code (e.g. `CANDIDATE_MISMATCH`, `SIGNATURE_INVALID`) when verifier exits 1. |
+| `VERIFIER_ERROR` | `ERROR` | `cairnwork-attest verify` exited with code 2 (usage or IO error), produced malformed/non-JSON stdout, or binary is missing. |
+| `<VERIFIER_CODE>` | `REJECTED` | Verifier rejection code (e.g. `CANDIDATE_MISMATCH`, `SIGNATURE_INVALID`) parsed from `verify --json` stdout when verifier exits 1. |
+
+Verifier rejection codes (`<VERIFIER_CODE>`) and details are parsed directly from machine-readable `cairnwork-attest verify --json` output.
 
 ## What it does not cover
 
@@ -141,7 +143,7 @@ Trade-off: `ancestor` allows the target branch to advance after an attestation i
 
 ## Pinning
 
-Pin this action by commit SHA rather than mutable tags. Similarly, specify `cairnwork-ref` as a full 40-hex commit SHA; branch and tag names are rejected.
+Pin this action by commit SHA rather than mutable tags. Similarly, specify `cairnwork-ref` as a full 40-hex commit SHA; branch and tag names are rejected. The commit must be at or after `5819a8c56e19fb32d597f8213a9961f46c3307d4` (the first with `verify --json`); older commits fail with `VERIFIER_ERROR` because they reject `--json` as an unknown option (argparse exit 2).
 
 ## Status
 

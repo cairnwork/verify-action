@@ -33,7 +33,7 @@ inputs:
     required: false
     default: ''
   cairnwork-ref:
-    description: '40-hex commit of cairnwork/cairnwork to install'
+    description: '40-hex commit of cairnwork/cairnwork to install. Must be at or after 5819a8c56e19fb32d597f8213a9961f46c3307d4 (the first with verify --json); older commits fail with VERIFIER_ERROR because they reject --json as an unknown option (argparse exit 2).'
     required: true
   python-version:
     description: 'Python version for cairnwork virtualenv'
