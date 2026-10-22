@@ -1,0 +1,141 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout verify-action
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Checkout demo-target
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: cairnwork/demo-target
+          ref: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          fetch-depth: 0
+          path: target
+
+      - name: Positive verification
+        id: test_positive
+        uses: ./
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert positive verification
+        run: |
+          test "${{ steps.test_positive.outputs.verdict }}" = "VERIFIED"
+          test "${{ steps.test_positive.outputs.code }}" = "OK"
+
+      - name: Negative candidate verification
+        id: test_negative_candidate
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert negative candidate verification
+        run: |
+          test "${{ steps.test_negative_candidate.outcome }}" = "failure"
+          test "${{ steps.test_negative_candidate.outputs.code }}" = "CANDIDATE_MISMATCH"
+
+      - name: Base check verification
+        id: test_base_check
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0000000000000000000000000000000000000001'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert base check verification
+        run: |
+          test "${{ steps.test_base_check.outcome }}" = "failure"
+          test "${{ steps.test_base_check.outputs.code }}" = "BASE_NOT_IN_TARGET"
+
+      - name: Skip path verification
+        id: test_skip_path
+        uses: ./
+        with:
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          fetch-notes: 'false'
+          require-when: 'label:cairnwork'
+          pr-labels: '[]'
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert skip path verification
+        run: |
+          test "${{ steps.test_skip_path.outcome }}" = "success"
+          test "${{ steps.test_skip_path.outputs.verdict }}" = "SKIPPED"
+          test "${{ steps.test_skip_path.outputs.code }}" = "BUNDLE_MISSING"
+
+      - name: Add git note to target repo
+        run: |
+          cd target
+          git notes --ref refs/notes/cairnwork add -F "$GITHUB_WORKSPACE/fixtures/demo-target-pr4/bundle.json" 7cd79ab8ac46ed466a345fa6e4de315e20f6f78d
+
+      - name: Notes path verification
+        id: test_notes_path
+        uses: ./
+        with:
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          fetch-notes: 'false'
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert notes path verification
+        run: |
+          test "${{ steps.test_notes_path.outcome }}" = "success"
+          test "${{ steps.test_notes_path.outputs.verdict }}" = "VERIFIED"
+          test "${{ steps.test_notes_path.outputs.code }}" = "OK"
+
+      - name: Clean up local note before notes fetch failure test
+        run: |
+          cd target
+          git notes --ref refs/notes/cairnwork remove 7cd79ab8ac46ed466a345fa6e4de315e20f6f78d || true
+
+      - name: Notes fetch failure verification
+        id: test_notes_fetch_failure
+        uses: ./
+        continue-on-error: true
+        with:
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          fetch-notes: 'true'
+          require-when: always
+          cairnwork-ref: '518592013c3e30e47b33d5d5ae48101335a05631'
+
+      - name: Assert notes fetch failure
+        run: |
+          test "${{ steps.test_notes_fetch_failure.outcome }}" = "failure"
+          test "${{ steps.test_notes_fetch_failure.outputs.code }}" = "NOTES_FETCH_FAILED"

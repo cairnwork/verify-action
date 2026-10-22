@@ -1,0 +1,117 @@
+name: 'Cairnwork Verify Action'
+description: 'Verify Cairnwork attestations on pull request commits'
+branding:
+  icon: 'check-circle'
+  color: 'green'
+
+inputs:
+  candidate:
+    description: '40-hex commit to verify'
+    required: false
+    default: '${{ github.event.pull_request.head.sha }}'
+  base:
+    description: '40-hex tip of the PR target branch'
+    required: false
+    default: '${{ github.event.pull_request.base.sha }}'
+  bundle-path:
+    description: 'Path to a bundle file; read from git notes if omitted'
+    required: false
+    default: ''
+  notes-ref:
+    description: 'Git notes ref containing attestations'
+    required: false
+    default: 'refs/notes/cairnwork'
+  fetch-notes:
+    description: 'Fetch notes ref from origin before verifying'
+    required: false
+    default: 'true'
+  public-key:
+    description: 'Public key PEM file path or PEM text'
+    required: true
+  core-identity:
+    description: 'Optional path to Core identity JSON pin file'
+    required: false
+    default: ''
+  cairnwork-ref:
+    description: '40-hex commit of cairnwork/cairnwork to install'
+    required: true
+  require-when:
+    description: 'Requirement condition: always | never | label:<name>'
+    required: false
+    default: 'label:cairnwork'
+  pr-labels:
+    description: 'JSON array of PR label names'
+    required: false
+    default: '${{ toJSON(github.event.pull_request.labels.*.name) }}'
+  repo-path:
+    description: 'Path to checked-out repository'
+    required: false
+    default: '.'
+  check-base:
+    description: 'Require predicate.base_commit to be ancestor of base'
+    required: false
+    default: 'true'
+
+outputs:
+  verdict:
+    description: 'Verification verdict (VERIFIED | REJECTED | SKIPPED | ERROR)'
+    value: ${{ steps.verify.outputs.verdict || steps.install.outputs.verdict }}
+  code:
+    description: 'Outcome code'
+    value: ${{ steps.verify.outputs.code || steps.install.outputs.code }}
+  candidate:
+    description: 'Candidate commit SHA'
+    value: ${{ steps.verify.outputs.candidate }}
+  base-commit:
+    description: 'Base commit from predicate'
+    value: ${{ steps.verify.outputs.base-commit }}
+  statement-sha256:
+    description: 'SHA256 of raw decoded statement payload'
+    value: ${{ steps.verify.outputs.statement-sha256 }}
+  keyid:
+    description: 'Key ID if available'
+    value: ${{ steps.verify.outputs.keyid }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up uv
+      uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+
+    - name: Install cairnwork
+      id: install
+      shell: bash
+      env:
+        CAIRNWORK_REF: ${{ inputs.cairnwork-ref }}
+      run: |
+        if ! [[ "$CAIRNWORK_REF" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "verdict=ERROR" >> "$GITHUB_OUTPUT"
+          echo "code=BAD_INPUT" >> "$GITHUB_OUTPUT"
+          echo "::error::BAD_INPUT: cairnwork-ref must be a 40-hex commit SHA"
+          exit 1
+        fi
+        if ! uv tool install --force --from "git+https://github.com/cairnwork/cairnwork.git@$CAIRNWORK_REF" cairnwork; then
+          echo "verdict=ERROR" >> "$GITHUB_OUTPUT"
+          echo "code=INSTALL_FAILED" >> "$GITHUB_OUTPUT"
+          echo "::error::INSTALL_FAILED: failed to install cairnwork@$CAIRNWORK_REF"
+          exit 1
+        fi
+
+    - name: Run verification
+      id: verify
+      shell: bash
+      working-directory: ${{ inputs.repo-path }}
+      env:
+        INPUT_CANDIDATE: ${{ inputs.candidate }}
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_BUNDLE_PATH: ${{ inputs.bundle-path }}
+        INPUT_NOTES_REF: ${{ inputs.notes-ref }}
+        INPUT_FETCH_NOTES: ${{ inputs.fetch-notes }}
+        INPUT_PUBLIC_KEY: ${{ inputs.public-key }}
+        INPUT_CORE_IDENTITY: ${{ inputs.core-identity }}
+        INPUT_CAIRNWORK_REF: ${{ inputs.cairnwork-ref }}
+        INPUT_REQUIRE_WHEN: ${{ inputs.require-when }}
+        INPUT_PR_LABELS: ${{ inputs.pr-labels }}
+        INPUT_REPO_PATH: ${{ inputs.repo-path }}
+        INPUT_CHECK_BASE: ${{ inputs.check-base }}
+      run: bash "$GITHUB_ACTION_PATH/scripts/verify.sh"
