@@ -88,6 +88,7 @@ jobs:
           mk '._type = "https://in-toto.io/Statement/v0.1"' old-statement
           # line breaks, spaces, non-ASCII and over 200 characters: exercises the cleaning and the cap
           mk '.predicateType = ("https://evil.example/a b\n\r%0A::error::x é" + ("z" * 300))' messy-predicate
+          mk '.predicateType = 5' nonstring-predicate  # cleaned value is empty: the placeholder path
           # correctly signed bundles under a throwaway key: v0.1 must verify, v0.2 must still be refused
           openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/test-key.pem"
           openssl pkey -in "$RUNNER_TEMP/test-key.pem" -pubout -out "$RUNNER_TEMP/test-pub.pem"
@@ -127,6 +128,19 @@ jobs:
         continue-on-error: true
         with:
           bundle-path: ${{ runner.temp }}/messy-predicate.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
+
+      - name: Non-string predicate version
+        id: test_nonstring_predicate
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ runner.temp }}/nonstring-predicate.json
           public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
           candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
@@ -175,6 +189,9 @@ jobs:
           test "${{ steps.test_messy_predicate.outputs.verdict }}" = "REJECTED"
           test "${{ steps.test_messy_predicate.outputs.code }}" = "UNSUPPORTED_PREDICATE_TYPE"
           test -z "${{ steps.test_messy_predicate.outputs.predicate-type }}"
+          test "${{ steps.test_nonstring_predicate.outcome }}" = "failure"
+          test "${{ steps.test_nonstring_predicate.outputs.code }}" = "UNSUPPORTED_PREDICATE_TYPE"
+          test -z "${{ steps.test_nonstring_predicate.outputs.predicate-type }}"
           # the re-signing is sound: the same key and method verify an unchanged v0.1 statement
           test "${{ steps.test_signed_v01.outcome }}" = "success"
           test "${{ steps.test_signed_v01.outputs.verdict }}" = "VERIFIED"
