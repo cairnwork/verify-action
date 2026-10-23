@@ -252,11 +252,15 @@ STATEMENT_TYPE=$(jq -r 'if (._type|type) == "string" then ._type else "" end' "$
 RAW_PTYPE=$(jq -r 'if (.predicateType|type) == "string" then .predicateType else "" end' "$PAYLOAD_FILE" 2>/dev/null || true)
 ptype_ok=false
 for t in "${SUPPORTED_PREDICATE_TYPES[@]}"; do
-  [[ "$RAW_PTYPE" == "$t" ]] && ptype_ok=true
+  if [[ "$RAW_PTYPE" == "$t" ]]; then
+    ptype_ok=true
+    break
+  fi
 done
 if [[ "$ptype_ok" != true ]]; then
   # untrusted value: keep only URL-safe characters and cap the length before echoing it
   shown=$(printf "%s" "$RAW_PTYPE" | LC_ALL=C tr -cd 'A-Za-z0-9._~:/?#@!$&()*+,;=-' | cut -c1-200)
+  [[ -n "$shown" ]] || shown="<empty or non-string>"
   fail "UNSUPPORTED_PREDICATE_TYPE" "predicateType '${shown}' is not supported by this action version"
 fi
 PREDICATE_TYPE="$RAW_PTYPE"
