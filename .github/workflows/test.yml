@@ -120,6 +120,7 @@ jobs:
           test -z "${{ steps.test_newer_predicate.outputs.predicate-type }}"
           test "${{ steps.test_old_statement.outcome }}" = "failure"
           test "${{ steps.test_old_statement.outputs.code }}" = "UNSUPPORTED_PREDICATE_TYPE"
+          test -z "${{ steps.test_old_statement.outputs.predicate-type }}"
           test "${{ steps.test_positive.outputs.predicate-type }}" = "https://cairnwork.github.io/attestation/verified-change/v0.1"
 
       - name: Skip path verification

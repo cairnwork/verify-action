@@ -119,7 +119,7 @@ Trade-off: `ancestor` allows the target branch to advance after an attestation i
 | `base-commit` | Base commit SHA extracted from the statement predicate (empty if unparseable). |
 | `statement-sha256` | SHA-256 digest of raw decoded DSSE payload bytes (empty if unparseable). |
 | `keyid` | Key ID from the DSSE signature envelope (empty if unparseable or non-whitelisted). |
-| `predicate-type` | The statement's `predicateType`, set only when it is a version this action supports (empty otherwise). |
+| `predicate-type` | The statement's `predicateType`, set only when it is a version this action supports (empty otherwise). It is read before the signature is checked, so it is not authenticated: rely on it only when `verdict` is `VERIFIED`. |
 
 ## Codes
 
