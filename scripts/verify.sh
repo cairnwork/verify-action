@@ -18,18 +18,25 @@ CHECK_BASE="${INPUT_CHECK_BASE:-ancestor}"
 BASE_COMMIT=""
 STATEMENT_SHA256=""
 KEYID=""
+PREDICATE_TYPE=""
+# Statement and predicate versions this action knows how to check. A newer
+# version is rejected with UNSUPPORTED_PREDICATE_TYPE instead of being read
+# with old field assumptions.
+SUPPORTED_STATEMENT_TYPE="https://in-toto.io/Statement/v1"
+SUPPORTED_PREDICATE_TYPES=("https://cairnwork.github.io/attestation/verified-change/v0.1")
 
 emit_outputs() {
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-    local v c cand bc s_sha kid
+    local v c cand bc s_sha kid ptype
     v=$(printf "%s" "$1" | tr -d '\r\n')
     c=$(printf "%s" "$2" | tr -d '\r\n')
     cand=$(printf "%s" "$CANDIDATE" | tr -d '\r\n')
     bc=$(printf "%s" "$BASE_COMMIT" | tr -d '\r\n')
     s_sha=$(printf "%s" "$STATEMENT_SHA256" | tr -d '\r\n')
     kid=$(printf "%s" "$KEYID" | tr -d '\r\n')
-    printf "verdict=%s\ncode=%s\ncandidate=%s\nbase-commit=%s\nstatement-sha256=%s\nkeyid=%s\n" \
-      "$v" "$c" "$cand" "$bc" "$s_sha" "$kid" >> "$GITHUB_OUTPUT"
+    ptype=$(printf "%s" "$PREDICATE_TYPE" | tr -d '\r\n')
+    printf "verdict=%s\ncode=%s\ncandidate=%s\nbase-commit=%s\nstatement-sha256=%s\nkeyid=%s\npredicate-type=%s\n" \
+      "$v" "$c" "$cand" "$bc" "$s_sha" "$kid" "$ptype" >> "$GITHUB_OUTPUT"
   fi
 }
 
@@ -237,6 +244,22 @@ else
 fi
 
 jq -e 'type == "object"' "$PAYLOAD_FILE" >/dev/null 2>&1 || fail "BUNDLE_MALFORMED" "decoded payload is not a JSON object"
+
+# 5b. Statement and predicate version (checked before any predicate field is read)
+STATEMENT_TYPE=$(jq -r 'if (._type|type) == "string" then ._type else "" end' "$PAYLOAD_FILE" 2>/dev/null || true)
+[[ "$STATEMENT_TYPE" == "$SUPPORTED_STATEMENT_TYPE" ]] || \
+  fail "UNSUPPORTED_PREDICATE_TYPE" "statement _type is not ${SUPPORTED_STATEMENT_TYPE}"
+RAW_PTYPE=$(jq -r 'if (.predicateType|type) == "string" then .predicateType else "" end' "$PAYLOAD_FILE" 2>/dev/null || true)
+ptype_ok=false
+for t in "${SUPPORTED_PREDICATE_TYPES[@]}"; do
+  [[ "$RAW_PTYPE" == "$t" ]] && ptype_ok=true
+done
+if [[ "$ptype_ok" != true ]]; then
+  # untrusted value: keep only URL-safe characters and cap the length before echoing it
+  shown=$(printf "%s" "$RAW_PTYPE" | LC_ALL=C tr -cd 'A-Za-z0-9._~:/?#@!$&()*+,;=-' | cut -c1-200)
+  fail "UNSUPPORTED_PREDICATE_TYPE" "predicateType '${shown}' is not supported by this action version"
+fi
+PREDICATE_TYPE="$RAW_PTYPE"
 BASE_COMMIT=$(jq -r '.predicate.base_commit // empty' "$PAYLOAD_FILE" 2>/dev/null || true)
 [[ "$BASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "BUNDLE_MALFORMED" "predicate.base_commit is missing or not 40-hex"
 

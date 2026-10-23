@@ -74,6 +74,8 @@ Never trust a public key committed in the pull request under review: an untruste
 
 Multiple keys may be supplied as PEM text separated by blank lines or as a newline-separated list of absolute file paths. The action attempts verification with each key in sequence until one succeeds, reporting the final error code if all fail.
 
+Published keys are listed by `keyid` (the SHA-256 of the raw Ed25519 key, the value in the bundle's signature) at <https://cairnwork.github.io/keys/>, each served as `/keys/<keyid>.pem`. Only a demo drill key is listed today. To rotate, add the new key next to the old one in `vars.CAIRNWORK_PUBLIC_KEY` before the attesting host starts signing with it, and remove the old key only once no pull request still needs an attestation signed by it.
+
 ## Requirement conditions (`require-when`)
 
 The default requirement condition is `always` (fail-closed).
@@ -117,6 +119,7 @@ Trade-off: `ancestor` allows the target branch to advance after an attestation i
 | `base-commit` | Base commit SHA extracted from the statement predicate (empty if unparseable). |
 | `statement-sha256` | SHA-256 digest of raw decoded DSSE payload bytes (empty if unparseable). |
 | `keyid` | Key ID from the DSSE signature envelope (empty if unparseable or non-whitelisted). |
+| `predicate-type` | The statement's `predicateType`, set only when it is a version this action supports (empty otherwise). |
 
 ## Codes
 
@@ -129,6 +132,7 @@ Trade-off: `ancestor` allows the target branch to advance after an attestation i
 | `NOTES_FETCH_FAILED` | `ERROR` | Git fetch of the notes ref from origin failed. |
 | `BUNDLE_MISSING` | `REJECTED` / `SKIPPED` | No bundle file or note found for candidate commit (`SKIPPED` when not required). |
 | `BUNDLE_MALFORMED` | `REJECTED` | Bundle is not valid DSSE JSON or statement payload cannot be decoded. |
+| `UNSUPPORTED_PREDICATE_TYPE` | `REJECTED` | The statement `_type` is not `https://in-toto.io/Statement/v1`, or its `predicateType` is not one this action version supports (today `https://cairnwork.github.io/attestation/verified-change/v0.1`). Checked before any predicate field is read; upgrade the action to accept a newer predicate version. |
 | `BASE_NOT_IN_TARGET` | `REJECTED` | `predicate.base_commit` does not satisfy the `check-base` condition against target `base`. |
 | `VERIFIER_ERROR` | `ERROR` | `cairnwork-attest verify` exited with code 2 (usage or IO error), produced malformed/non-JSON stdout, or binary is missing. |
 | `<VERIFIER_CODE>` | `REJECTED` | Verifier rejection code (e.g. `CANDIDATE_MISMATCH`, `SIGNATURE_INVALID`) parsed from `verify --json` stdout when verifier exits 1. |

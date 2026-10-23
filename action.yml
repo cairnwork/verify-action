@@ -75,6 +75,9 @@ outputs:
   keyid:
     description: 'Key ID if available'
     value: ${{ steps.verify.outputs.keyid }}
+  predicate-type:
+    description: 'Statement predicateType, set once it is a supported version'
+    value: ${{ steps.verify.outputs.predicate-type }}
 
 runs:
   using: 'composite'
