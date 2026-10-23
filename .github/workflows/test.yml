@@ -77,6 +77,52 @@ jobs:
           test "${{ steps.test_base_check.outcome }}" = "failure"
           test "${{ steps.test_base_check.outputs.code }}" = "BASE_NOT_IN_TARGET"
 
+      - name: Build bundles with unsupported versions
+        run: |
+          fx="$GITHUB_WORKSPACE/fixtures/demo-target-pr4/bundle.json"
+          mk() {
+            p=$(jq -r .payload "$fx" | base64 -d | jq -c "$1" | base64 -w0)
+            jq --arg p "$p" '.payload = $p' "$fx" > "$RUNNER_TEMP/$2.json"
+          }
+          mk '.predicateType = "https://cairnwork.github.io/attestation/verified-change/v0.2"' newer-predicate
+          mk '._type = "https://in-toto.io/Statement/v0.1"' old-statement
+
+      - name: Newer predicate version
+        id: test_newer_predicate
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ runner.temp }}/newer-predicate.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
+
+      - name: Old statement type
+        id: test_old_statement
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ runner.temp }}/old-statement.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
+
+      - name: Assert unsupported versions are rejected
+        run: |
+          test "${{ steps.test_newer_predicate.outcome }}" = "failure"
+          test "${{ steps.test_newer_predicate.outputs.code }}" = "UNSUPPORTED_PREDICATE_TYPE"
+          test -z "${{ steps.test_newer_predicate.outputs.predicate-type }}"
+          test "${{ steps.test_old_statement.outcome }}" = "failure"
+          test "${{ steps.test_old_statement.outputs.code }}" = "UNSUPPORTED_PREDICATE_TYPE"
+          test -z "${{ steps.test_old_statement.outputs.predicate-type }}"
+          test "${{ steps.test_positive.outputs.predicate-type }}" = "https://cairnwork.github.io/attestation/verified-change/v0.1"
+
       - name: Skip path verification
         id: test_skip_path
         uses: ./
