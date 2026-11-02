@@ -22,8 +22,14 @@ name: Cairnwork accept
 # fork and J0 stops it. J2 (environment cairnwork-report: the report App key and the ledger verdict
 # deploy key) never runs PR code; it reads and writes the ledger itself over SSH with the verdict
 # key and creates the required check with the App's token. The report App needs checks write,
-# actions read, contents read and metadata; no App permission grows for the ledger. With no ledger
-# repository or no claim key, J1 stops with LEDGER_NOT_CONFIGURED before fetching anything.
+# actions read, contents read and metadata; no App permission grows for the ledger.
+#
+# Verdict tags are signed by the verdict key (J2 signs every verdict commit) and J2 honours only
+# verdicts whose signature verifies against that key; an unsigned or other-key verdict reads as no
+# verdict (LEDGER_VERDICT_UNSIGNED). The ledger ruleset on verdict/** is defence in depth: it does
+# not restrict deploy-key pushes, so the reader does the proving.
+#
+# With no ledger repository or no claim key, J1 stops with LEDGER_NOT_CONFIGURED before fetching anything.
 
 on:
   workflow_call:

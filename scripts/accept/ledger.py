@@ -31,6 +31,7 @@ CLAIM_SLACK = 3  # numbering cap = max_attempts + CLAIM_SLACK: skipped numbers u
 LEDGER_NOT_CONFIGURED = "LEDGER_NOT_CONFIGURED"
 LEDGER_UNAVAILABLE = "LEDGER_UNAVAILABLE"
 LEDGER_CONFLICT = "LEDGER_CONFLICT"
+LEDGER_VERDICT_UNSIGNED = "LEDGER_VERDICT_UNSIGNED"  # a verdict tag not signed by the verdict key
 SHA_BOUND_ELSEWHERE = "SHA_BOUND_ELSEWHERE"
 PRIOR_VERDICT = "PRIOR_VERDICT"
 ATTEMPT_PENDING = "ATTEMPT_PENDING"
@@ -100,6 +101,9 @@ class Ledger:
     binds: dict[str, Entry]  # head sha -> bind
     claims: dict[tuple[str, int], Entry]  # (tests version, n) -> claim
     verdicts: dict[tuple[str, int], Entry]  # (tests version, n) -> verdict
+    # (tests version, n) of verdict tags a signature-checking reader did not honour: they are
+    # not in ``verdicts``, so the attempt reads as unjudged, and the reader reports the code.
+    unsigned: frozenset[tuple[str, int]] = frozenset()
 
 
 # --- strict reading --------------------------------------------------------------------------
@@ -319,6 +323,8 @@ def after_verdict_failure(
         return LEDGER_UNAVAILABLE
     verdict = ledger.verdicts.get((version, n))
     if verdict is None:
+        if (version, n) in ledger.unsigned:
+            return LEDGER_VERDICT_UNSIGNED  # the tag name is taken by a verdict we do not honour
         return RETRY
     if verdict.nonce == nonce:
         return CREATED

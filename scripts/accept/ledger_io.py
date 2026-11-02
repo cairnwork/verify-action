@@ -16,6 +16,14 @@ J1 usage (prints one line of JSON with fixed values only; exit 0 go on, 2 stop, 
 The ledger URL comes from ``ACCEPT_LEDGER_URL`` (empty: LEDGER_NOT_CONFIGURED); the SSH key file
 from ``ACCEPT_LEDGER_SSH_KEY`` and known hosts from ``ACCEPT_LEDGER_KNOWN_HOSTS``. J2 passes a
 token instead (``token=``), sent as an HTTP header through git's environment, never in argv.
+
+Verdict signatures: the ledger's ruleset does not restrict deploy-key pushes, so the ledger alone
+cannot show that a verdict tag came from J2. With ``sign=True`` (J2, which must also hold an
+``ssh_key``) the verdict commit is SSH-signed with that key, and ``read`` honours only verdict
+commits whose signature verifies against that key's public half (``git verify-commit``); any
+other verdict (unsigned, other key, bad signature) is left out of ``Ledger.verdicts`` and listed
+in ``Ledger.unsigned``. Claims and binds are never signed. A reader without ``sign`` (J1, the
+token path) neither signs nor checks, and a token-path verdict is not honoured by a signing reader.
 """
 
 from __future__ import annotations
@@ -26,6 +34,7 @@ import sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))  # -I drops the script dir
 
 import base64
+import dataclasses
 import json
 import os
 import re
@@ -53,10 +62,19 @@ class GitLedger:
     """One ledger repository. ``url`` is validated by the callers that take it from outside."""
 
     def __init__(self, url: str, target_repo_id: int, *, ssh_key: str | None = None,
-                 known_hosts: str | None = None, token: str | None = None) -> None:  # fmt: skip
-        self.url, self.target_repo_id = url, target_repo_id
+                 known_hosts: str | None = None, token: str | None = None,
+                 sign: bool = False) -> None:  # fmt: skip
+        if sign and ssh_key is None:
+            raise ValueError("sign needs a key")
+        self.url, self.target_repo_id, self._sign = url, target_repo_id, sign
         self._dir = tempfile.mkdtemp(prefix="ledger-")  # 0700
         self._env = _git_env(self._dir, ssh_key, known_hosts, token)
+        if sign:
+            try:
+                self._env.update(_signing_env(self._dir, ssh_key, self._env))  # type: ignore[arg-type]
+            except BaseException:
+                self.close()
+                raise
         self._git("init", "--quiet", "--bare", self._dir)
         self._git("mktree", stdin="")  # writes the empty tree the entries point at
 
@@ -86,15 +104,40 @@ class GitLedger:
                 "for-each-ref", "--format=%(refname)%00%(objecttype)%00%(contents)%00",
                 *(f"refs/l/{s}/" for s in _SPACES),
             )  # fmt: skip
-            return L.parse_ledger(config, _records(out), self.target_repo_id)
+            records, unsigned = _records(out), set()
+            if self._sign:
+                records, unsigned = self._honour_signed(records)
+            ledger = L.parse_ledger(config, records, self.target_repo_id)
+            return dataclasses.replace(ledger, unsigned=frozenset(unsigned))
         except (OSError, subprocess.SubprocessError, L.LedgerUnreadable, UnicodeError):
             return None
+
+    def _honour_signed(self, records: list[tuple[str, str, str]]):
+        """Split off the verdict records whose commit signature does not verify (key and ref)."""
+        kept, unsigned = [], set()
+        for record in records:
+            match = L._REF.match(record[0])
+            if match is None or match.group(3) != "verdict":
+                kept.append(record)
+            elif self._verified("refs/l/" + record[0][len("refs/tags/") :]):
+                kept.append(record)
+            else:
+                unsigned.add((match.group(4), int(match.group(5))))
+        return kept, unsigned
+
+    def _verified(self, ref: str) -> bool:
+        try:
+            return self._git("log", "--format=%G?", "-1", ref).strip() == "G"
+        except OSError:
+            return False
 
     def create(self, ref: str, message: str) -> bool:
         """Push a new tag. True only when git reported success; anything else (rejected, timeout,
         connection lost) is False, and the caller reads the ledger again before deciding."""
         try:
-            commit = self._git("commit-tree", EMPTY_TREE, "-F", "-", stdin=message + "\n").strip()
+            signed = ["-S"] if self._sign and ref.startswith("refs/tags/verdict/") else []
+            commit = self._git("commit-tree", *signed, EMPTY_TREE, "-F", "-",
+                               stdin=message + "\n").strip()  # fmt: skip
             if not L.is_sha(commit):
                 return False
             self._git("push", "--quiet", "--porcelain", "--no-verify", "--", self.url,
@@ -128,6 +171,26 @@ def _git_env(home: str, ssh_key: str | None, known_hosts: str | None, token: str
     for i, (key, value) in enumerate(pairs):
         env[f"GIT_CONFIG_KEY_{i}"], env[f"GIT_CONFIG_VALUE_{i}"] = key, value
     return env
+
+
+def _signing_env(home: str, ssh_key: str, env: dict) -> dict:
+    """Extra git config (appended to the throwaway env) for SSH signing with ``ssh_key``; the
+    allowed-signers file holds only that key's public half. No gpgsign: only -S signs."""
+    done = subprocess.run(["ssh-keygen", "-y", "-f", ssh_key], capture_output=True, text=True,
+                          timeout=GIT_TIMEOUT, check=False)  # fmt: skip
+    if done.returncode != 0 or not done.stdout.strip():
+        raise ValueError("signing key")
+    allowed = os.path.join(home, "allowed_signers")
+    fd = os.open(allowed, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write("cairnwork-accept " + done.stdout.strip() + "\n")
+    extra = [("gpg.format", "ssh"), ("user.signingkey", ssh_key),
+             ("gpg.ssh.allowedSignersFile", allowed)]  # fmt: skip
+    n = int(env["GIT_CONFIG_COUNT"])
+    out = {"GIT_CONFIG_COUNT": str(n + len(extra))}
+    for i, (key, value) in enumerate(extra, n):
+        out[f"GIT_CONFIG_KEY_{i}"], out[f"GIT_CONFIG_VALUE_{i}"] = key, value
+    return out
 
 
 def _records(out: str) -> list[tuple[str, str, str]]:

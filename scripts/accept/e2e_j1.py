@@ -456,6 +456,12 @@ def wired(c: Checks, fx: Fixture, base: Path, canary: str) -> None:
         assert found is not None
         return found
 
+    # J2 goes through the key path: a throwaway ed25519 key (never committed) signs the verdicts
+    key_file = base / "verdict-key"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key_file)],
+                   check=True, capture_output=True)  # fmt: skip
+    verdict_key = key_file.read_text()
+
     def j0(label: str) -> dict[str, str]:
         return j0_gate.decide(api, j0_event(fx, label), "main", True)
 
@@ -468,7 +474,7 @@ def wired(c: Checks, fx: Fixture, base: Path, canary: str) -> None:
             "ACCEPT_J1_RESULT": "" if out is None or out.result is None else json.dumps(out.result),
             "ACCEPT_LEDGER_URL": "https://github.com/fixture-org/ledger.git",
             "ACCEPT_CHECK_NAME": "cairnwork-accept", "ACCEPT_NOTE_CHECK_NAME": "cairnwork-accept-note",
-            "ACCEPT_APP_TOKEN": APP_TOKEN,
+            "ACCEPT_APP_TOKEN": APP_TOKEN, "ACCEPT_LEDGER_KEY": verdict_key,
         }  # fmt: skip
         before = len(api.checks)
         code = j2_report.main(environ, api=api, ledger_url=url)
@@ -482,7 +488,7 @@ def wired(c: Checks, fx: Fixture, base: Path, canary: str) -> None:
         c.that("wired-j0", f"J0 {label}: {code}", j0(label)["code"] == code)
 
     # correct fix: J0 lets it through, J1 claims attempt 1 in the ledger, J2 reports success
-    gate = j0("good")
+    gate = gate_good = j0("good")
     c.that("wired-good", "J0 lets it through", gate["run"] == "true" and gate["issue"] == str(ISSUE)
            and gate["base-sha"] == git(fx.target, "rev-parse", f"{fx.heads['good']}^"))  # fmt: skip
     out = run_case(fx, base, "wired-good", {**j1_inputs(gate), "CW_RUN_ID": "5001"}, ledger_url=url)
@@ -532,6 +538,20 @@ def wired(c: Checks, fx: Fixture, base: Path, canary: str) -> None:
     ledger = read()
     c.that("wired-stranger", "ledger untouched", fx.heads["wrong"] not in ledger.binds
            and not any(v.head_sha == fx.heads["wrong"] for v in ledger.claims.values()))  # fmt: skip
+
+    # a verdict tag written without a signature is not honoured: J2 reports it, never a success
+    head = gate_good["head-sha"]
+    ref = f"refs/tags/verdict/{next(iter(v for v, _n in read().verdicts))}/1"
+    text = git(fx.ledger, "log", "-1", "--format=%B", ref)
+    git(fx.ledger, "tag", "-d", ref.removeprefix("refs/tags/"))
+    plain = git(fx.ledger, "commit-tree", "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-F", "-",
+                data=(text + "\n").encode())
+    git(fx.ledger, "update-ref", ref, plain)
+    c.that("wired-unsigned", "plain verdict is still there for an unsigned reader",
+           len(L.counted_verdicts(read(), head)) == 1)  # fmt: skip
+    check = j2(gate_good, 5004, None) or {}
+    c.that("wired-unsigned", "J2 failure LEDGER_VERDICT_UNSIGNED", check.get("conclusion") == "failure"
+           and "LEDGER_VERDICT_UNSIGNED" in check.get("output", {}).get("title", ""))  # fmt: skip
     print("case wired: done", flush=True)
 
 
