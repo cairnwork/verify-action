@@ -5,7 +5,8 @@ J2 reads the ledger itself and does not take J1's word for the ledger. J1's resu
 thing only: the verdict of this run's own unjudged claim. Two steps:
 
 1. ``plan_writes``: which verdict tags to write (this run's claim from J1's result; another run's
-   unjudged claim as ATTEMPT_LOST once that run's J1 job of that attempt has ended).
+   unjudged claim as ATTEMPT_LOST once that run's J1 job of that attempt has ended, or as
+   ATTEMPT_LOST/J1_RUN_NOT_FOUND once that job stayed unseen past J1_UNKNOWN_TIMEOUT).
 2. ``decide_check``: after writing and reading the ledger again right before creating the check,
    whether to create the required check and with which conclusion (only success or failure).
 
@@ -32,6 +33,13 @@ CONCLUSIONS = (SUCCESS, FAILURE)  # never neutral or skipped: both pass a requir
 FINISHED, RUNNING, UNKNOWN = "FINISHED", "RUNNING", "UNKNOWN"
 
 J1_INCOMPLETE = "J1_INCOMPLETE"
+# Another run's J1 job stayed UNKNOWN (run deleted, or this token cannot see it) for longer than
+# J1_UNKNOWN_TIMEOUT seconds after its claim was written: its claim is closed as ATTEMPT_LOST with
+# this code, so the sha gets a failed check instead of waiting forever (verify-action#13). 30 hours
+# is GitHub's 24-hour queue limit plus the 6-hour job limit: a J1 job still alive is visible and
+# never UNKNOWN for that long, so only a run that is gone (or hidden) reaches it.
+J1_RUN_NOT_FOUND = "J1_RUN_NOT_FOUND"
+J1_UNKNOWN_TIMEOUT = 30 * 3600
 PROTECTION_BELOW_MINIMUM = "PROTECTION_BELOW_MINIMUM"
 
 # The protection levels a minimum can name, and the relation between them, copied from Cairnwork's
@@ -93,7 +101,7 @@ def _tables() -> tuple[frozenset[str], frozenset[str]]:
 RUN_CODES, PROTECTIONS = _tables()
 KNOWN_CODES = frozenset(
     (*J0_CODES, *J1_REJECT_CODES, J1_INCOMPLETE, L.LEDGER_CONFLICT, L.LEDGER_VERDICT_UNSIGNED, L.LEDGER_VERDICT_STRANDED, L.ATTEMPT_LOST,
-     "VERIFIED", L.LEDGER_UNAVAILABLE, PROTECTION_BELOW_MINIMUM)
+     "VERIFIED", L.LEDGER_UNAVAILABLE, PROTECTION_BELOW_MINIMUM, J1_RUN_NOT_FOUND)
 ) | RUN_CODES
 
 
@@ -173,16 +181,23 @@ def _meaning(sha: str, status: str, code: str, protection: str) -> dict[str, str
 
 
 def plan_writes(
-    ledger: L.Ledger, sha: str, run_id: int, j1: J1, status_of: Callable[[int, int], str]
+    ledger: L.Ledger, sha: str, run_id: int, j1: J1, status_of: Callable[[int, int], str],
+    now: int | None = None,
 ) -> list[Write]:
     """Verdicts to write for the sha's unjudged claims. A claim is this run's own when its run id
-    and J1 attempt are ours; another run's claim is closed only once that attempt's J1 ended."""
+    and J1 attempt are ours; another run's claim is closed only once that attempt's J1 ended, or
+    (``now`` given) once it stayed UNKNOWN past J1_UNKNOWN_TIMEOUT after the claim's time."""
     writes = []
     for (version, n), claim in L.pending_claims(ledger, sha):
         if claim.run_id == run_id and j1.attempt is not None and claim.j1_attempt == j1.attempt:
             writes.append(Write(version, n, _own_verdict(sha, j1), own=True))
-        elif status_of(claim.run_id, claim.j1_attempt) == FINISHED:
+            continue
+        status = status_of(claim.run_id, claim.j1_attempt)
+        if status == FINISHED:
             lost = _meaning(sha, L.ATTEMPT_LOST, L.ATTEMPT_LOST, "none")
+            writes.append(Write(version, n, lost, own=False))
+        elif status == UNKNOWN and now is not None and now - claim.time > J1_UNKNOWN_TIMEOUT:
+            lost = _meaning(sha, L.ATTEMPT_LOST, J1_RUN_NOT_FOUND, "none")
             writes.append(Write(version, n, lost, own=False))
     return writes
 

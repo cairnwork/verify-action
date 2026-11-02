@@ -49,6 +49,7 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -218,7 +219,7 @@ def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None) -> T.Check:
         def status_of(run_id: int, j1_attempt: int) -> str:
             return j1_status(api, env["j1_job_name"], run_id, j1_attempt)
 
-        for write in T.plan_writes(ledger, env["sha"], env["run_id"], j1, status_of):
+        for write in T.plan_writes(ledger, env["sha"], env["run_id"], j1, status_of, int(time.time())):
             outcome = write_verdict(io, write, env["run_id"])
             if write.own or outcome in (L.CREATED, L.SAME):
                 written[(write.version, write.n)] = outcome if write.own else L.CREATED
