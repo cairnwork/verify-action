@@ -308,6 +308,12 @@ class BudgetAtJ2(unittest.TestCase):
         self.assertIn(SHA2, led.stuck)  # the named head is held by LEDGER_VERDICT_STRANDED
         self.assertEqual(L.j1_gate(led, "3" * 40, 5, VER, 1).code, L.ATTEMPTS_EXHAUSTED)
 
+    def test_odd_claim_ref_of_another_version_is_not_subtracted(self):
+        odd = ("refs/tags/claim/%s/1" % VER2, "commit", "not json\n")
+        led = ledger(bind(), odd, claim(1, sha=SHA2, k=4), claim(2), verdict(2))
+        self.assertEqual((T.skipped_claims(led, VER), T.skipped_claims(led, VER2)), (0, 1))
+        self.assertEqual(self.check(led, sha=SHA1).code, L.ATTEMPTS_EXHAUSTED)  # SHA2's claim spent it
+
     def test_stranded_verdict_number_is_still_charged(self):
         odd = ("refs/tags/claim/%s/1" % VER, "commit", "not json\n")
         led = ledger(bind(), odd, verdict(1, sha=SHA2, k=4), claim(2), verdict(2))
