@@ -405,6 +405,62 @@ class SignedVerdicts(Scenario):
         self.assertEqual(io._git("log", "--format=%G?", "-1", f"refs/l/claim/{VER}/1").strip(), "N")
 
 
+class J1ChecksSignatures(SignedVerdicts):
+    """J1 given the verdict public key reads verdicts by J2's rule; without it, as before."""
+
+    def reader(self, key):
+        with open(key + ".pub") as f:
+            pub = f.read().strip()
+        io = IO.GitLedger(self.remote, TARGET, verdict_pubkey=pub)
+        self.ios.append(io)
+        return io
+
+    def two_claims_second_unsigned(self, key):
+        self.claimed()
+        self.assertEqual(self.j1(sha=SHA2, run_id=101, max_attempts=3), (2, None))
+        msg = self.verdict_msg().replace(SHA1, SHA2).replace('"n":1', '"n":2')
+        self.assertTrue(self.io().create(f"refs/tags/verdict/{VER}/2", msg))  # unsigned verdict of claim 2
+        self.assertTrue(self.signer(key).create(f"refs/tags/verdict/{VER}/1", self.verdict_msg()))
+
+    def test_unsigned_verdict_on_another_claim_does_not_lower_used(self):
+        key = self.keygen("k1")
+        self.two_claims_second_unsigned(key)
+        plain, checked = self.read(), self.reader(key).read()
+        self.assertEqual(L.used(plain, VER), 2)  # plain reader: two judged claims
+        self.assertEqual(L.used(checked, VER), 2)  # claim 2 stays an unjudged claim, not freed
+        self.assertEqual(checked.unsigned, frozenset({(VER, 2)}))
+
+    def test_unsigned_verified_is_stranded_not_prior_verdict(self):
+        key = self.keygen("k1")
+        self.claimed()
+        self.assertTrue(self.io().create(f"refs/tags/verdict/{VER}/1", self.verdict_msg()))
+        self.assertEqual(IO.j1_check(self.io(), SHA1, 5, VER, 1), L.PRIOR_VERDICT)  # unchecked reader
+        self.assertEqual(IO.j1_check(self.reader(key), SHA1, 5, VER, 1), L.LEDGER_VERDICT_STRANDED)
+        self.assertEqual(self.j1(io=self.reader(key), run_id=102), (None, L.LEDGER_VERDICT_STRANDED))
+
+    def test_unsigned_not_consumed_verdict_does_not_free_the_attempt(self):
+        key = self.keygen("k1")
+        self.claimed()
+        msg = self.verdict_msg().replace("VERIFIED", "NOT_CONSUMED").replace("CORE_NOT_CONSUMED", "BAD_SCOPE")
+        msg = msg.replace('"code":"CORE_VERIFIED"', '"code":"BAD_SCOPE"')
+        self.assertTrue(self.io().create(f"refs/tags/verdict/{VER}/1", msg))
+        self.assertEqual(L.used(self.read(), VER), 0)  # no key: as on main, the returned attempt is free
+        checked = self.reader(key).read()
+        self.assertEqual(checked.unsigned, frozenset({(VER, 1)}))
+        self.assertEqual(L.used(checked, VER), 1)  # the claim stays unjudged and counts
+
+    def test_signed_verdict_still_prior_verdict_and_other_key_is_stranded(self):
+        key = self.keygen("k1")
+        self.claimed()
+        self.assertTrue(self.signer(key).create(f"refs/tags/verdict/{VER}/1", self.verdict_msg()))
+        self.assertEqual(IO.j1_check(self.reader(key), SHA1, 5, VER, 1), L.PRIOR_VERDICT)
+        self.assertEqual(IO.j1_check(self.reader(self.keygen("k2")), SHA1, 5, VER, 1), L.LEDGER_VERDICT_STRANDED)
+
+    def test_bad_pubkey_is_refused(self):
+        with self.assertRaises(ValueError):
+            IO.GitLedger(self.remote, TARGET, verdict_pubkey="not a key")
+
+
 class Cli(unittest.TestCase):
     def run_cli(self, *args, env=None):
         here = os.path.dirname(os.path.abspath(__file__))

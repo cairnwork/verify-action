@@ -13,7 +13,8 @@ name: Cairnwork accept
 #     accept:
 #       uses: cairnwork/verify-action/.github/workflows/accept.yml@<40-hex>
 #       with: {tests-repo: ..., ledger-repo: ..., verify-action-sha: <same 40-hex>,
-#              target-branch: main, max-attempts: 3, report-app-client-id: ...}
+#              target-branch: main, max-attempts: 3, report-app-client-id: ...,
+#              ledger-verdict-pubkey: <OpenSSH public key of the verdict deploy key>}
 #       secrets: {TESTS_KEY: ..., LEDGER_KEY: ..., LEDGER_VERDICT_KEY: ..., REPORT_APP_KEY: ...}
 #
 # Who holds what (design v2.2 section 2): J0 has no environment and no secret, only a read-only
@@ -40,6 +41,11 @@ on:
         required: true
       ledger-repo:
         description: "Ledger repository (owner/name, same owner as the target)"
+        type: string
+        required: false
+        default: ''
+      ledger-verdict-pubkey:
+        description: "OpenSSH public key of the verdict deploy key (not a secret); J1 then honours only verdicts signed with it, as J2 does"
         type: string
         required: false
         default: ''
@@ -182,6 +188,7 @@ jobs:
           CW_TARGET_REPO: ${{ github.repository }}
           CW_TESTS_REPO: ${{ inputs.tests-repo }}
           CW_LEDGER_REPO: ${{ inputs.ledger-repo }}
+          CW_LEDGER_VERDICT_PUBKEY: ${{ inputs.ledger-verdict-pubkey }}
           CW_RUN_ID: ${{ github.run_id }}
           CW_RUN_ATTEMPT: ${{ github.run_attempt }}
           CW_TARGET_REPO_ID: ${{ github.repository_id }}
@@ -263,6 +270,7 @@ jobs:
           ACCEPT_J1_JOB_NAME: verify
           ACCEPT_LEDGER_URL: ${{ inputs.ledger-repo != '' && format('git@github.com:{0}.git', inputs.ledger-repo) || '' }}  # SSH form only; without the key J2 reports LEDGER_KEY_MISSING
           ACCEPT_MIN_PROTECTION: ${{ inputs.min-protection }}
+          ACCEPT_MAX_ATTEMPTS: ${{ inputs.max-attempts }}
           ACCEPT_CHECK_NAME: cairnwork-accept
           ACCEPT_NOTE_CHECK_NAME: cairnwork-accept-note
           ACCEPT_APP_TOKEN: ${{ steps.app.outputs.token }}

@@ -295,6 +295,26 @@ class J1KeyOrder(unittest.TestCase):
         self.assertEqual(self.events, ["check", "claim", "close", "candidate"])
         self.assertEqual(result["outcome"], "ran")
 
+    def test_verdict_pubkey_warning_only_when_missing(self):
+        for key, warned in (("", True), ("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIexample", False)):
+            self.cfg.verdict_pubkey = key
+            with mock.patch.object(jv, "log") as log:
+                self.run_j1(OrderLedger([]))
+            self.assertEqual(any(c.args == (jv.WARN_NO_VERDICT_KEY,) for c in log.call_args_list), warned)
+
+    def test_malformed_pubkey_logs_its_reason(self):
+        self.cfg.verdict_pubkey = "not a key"
+        with mock.patch.object(jv, "log") as log:
+            self.run_j1(OrderLedger([]))
+        self.assertIn(mock.call(jv.BAD_VERDICT_KEY), log.call_args_list)
+
+    def test_pubkey_comes_from_env_and_reaches_the_ledger_reader(self):
+        cfg = jv.Config(head=HEAD, base=BASE, issue=7, pr=5, author="a", target_repo="o/t", target_branch="main",
+                        tests_repo="o/tests", ledger_repo="o/ledger", run_id=1, run_attempt=1, private=Path(self.tmp.name),
+                        cairnwork_bin=Path("/x"), uv="/x", target_repo_id=REPO_ID, ledger_key="K",
+                        verdict_pubkey="ssh-ed25519 AAAA")  # fmt: skip
+        self.assertEqual(jv.ledger_for(cfg).verdict_pubkey, "ssh-ed25519 AAAA")
+
     def test_closed_on_a_ledger_refusal(self):
         result = self.run_j1(OrderLedger(self.events, check=L.PRIOR_VERDICT))
         self.assertEqual(self.events, ["check", "close"])
@@ -579,6 +599,12 @@ class Workflow(unittest.TestCase):
         self.assertIn("CW_MIN_PROTECTION: ${{ inputs.min-protection }}", self.jobs["verify"])
         self.assertIn("ACCEPT_MIN_PROTECTION: ${{ inputs.min-protection }}", self.jobs["report"])
         self.assertNotIn("https://github.com", self.jobs["report"])
+
+    def test_verdict_pubkey_input_reaches_j1(self):
+        self.assertRegex(self.text, r"(?m)^      ledger-verdict-pubkey:\n(?:.*\n)*?        required: false$")
+        self.assertIn("CW_LEDGER_VERDICT_PUBKEY: ${{ inputs.ledger-verdict-pubkey }}", self.jobs["verify"])
+        self.assertNotIn("ledger-verdict-pubkey", self.jobs["report"])
+        self.assertIn("ACCEPT_MAX_ATTEMPTS: ${{ inputs.max-attempts }}", self.jobs["report"])
 
     def test_three_jobs(self):
         self.assertEqual(list(self.jobs), ["gate", "verify", "report"])
