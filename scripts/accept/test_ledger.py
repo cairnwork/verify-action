@@ -280,8 +280,6 @@ class Table(unittest.TestCase):
         self.assertEqual(self.decide(led, j1(j1_result("rejected", code="PRIOR_VERDICT"))).conclusion, T.SUCCESS)
         # J1 broke before anything (no claim of ours): report the sha's counted verdict
         self.assertEqual(self.decide(led, j1(None, success=False, attempt=None)).conclusion, T.SUCCESS)
-        # a J0 refusal does not hide an earlier verdict either
-        self.assertEqual(self.decide(led, j1(None, success=False), j0="NO_TASK").conclusion, T.SUCCESS)
 
     def test_two_counted_verdicts_one_fails(self):
         led = ledger(claim(1), verdict(1), claim(2, k=4), verdict(2, "FAILED", k=5))
@@ -322,6 +320,15 @@ class Table(unittest.TestCase):
         # a head that moved on: no required check, and the earlier verdict is not promoted either
         check = self.decide(ledger(bind(), claim(1), verdict(1)), j1(j1_result("rejected", code="STALE_HEAD")))
         self.assertEqual((check.conclusion, check.code), (None, "STALE_HEAD"))
+
+    def test_j0_refusal_wins_over_an_earlier_verdict(self):
+        for code in ("WRONG_TARGET_BRANCH", "FORK_NOT_SUPPORTED", "NO_TASK"):
+            led = ledger(bind(), claim(1), verdict(1))
+            check = self.decide(led, j1(None, success=False, attempt=None), j0=code)
+            self.assertEqual((check.conclusion, check.code, check.prior_verdict), (T.FAILURE, code, True))
+        for code in T.NO_CHECK_J0:  # no check at all, as before
+            check = self.decide(ledger(bind(), claim(1), verdict(1)), j1(None, success=False), j0=code)
+            self.assertIsNone(check.conclusion)
 
     def test_prior_failed_then_verified_run_is_unchanged(self):
         # an earlier FAILED plus this run's VERIFIED: the sha still fails (PRIOR_VERDICT), as before

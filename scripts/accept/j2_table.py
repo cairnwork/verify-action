@@ -238,6 +238,8 @@ def decide_check(
     own = [ledger.verdicts[k] for k in written if k in ledger.verdicts]
     if any(o == L.LEDGER_CONFLICT for o in written.values()):
         return Check(FAILURE, L.LEDGER_CONFLICT, **title)
+    if j0_code is not None:  # J0's refusal of this run wins too (NO_CHECK_J0 returned at row 1)
+        return _refusal(j0_code, bool(verdicts), title)
     result = j1.result if j1.complete else None
     if result is not None and result["outcome"] == "rejected" and result["code"] not in NOT_A_REFUSAL:
         # this run's refusal wins: an earlier verdict for the sha is mentioned, never promoted
@@ -257,8 +259,6 @@ def decide_check(
     returned = [v for v in own if not L.counted(v)]
     if returned:  # row 4: our claim was not used up; the sha can be resumed
         return Check(FAILURE, public_code(returned[0].code), **title)
-    if j0_code is not None:  # row 8
-        return Check(FAILURE, public_code(j0_code), **title)
     if not j1.complete or j1.result is None:  # row 10
         return Check(FAILURE, J1_INCOMPLETE, **title)
     if j1.result["outcome"] == "ran":  # J1 says it ran, but no claim of this run: never trusted
