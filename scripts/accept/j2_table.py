@@ -32,6 +32,27 @@ CONCLUSIONS = (SUCCESS, FAILURE)  # never neutral or skipped: both pass a requir
 FINISHED, RUNNING, UNKNOWN = "FINISHED", "RUNNING", "UNKNOWN"
 
 J1_INCOMPLETE = "J1_INCOMPLETE"
+PROTECTION_BELOW_MINIMUM = "PROTECTION_BELOW_MINIMUM"
+
+# The one ordering of the receipt's protection levels (the names redact_result.PROTECTIONS emits),
+# weakest first. The macOS grades rank below their Linux counterparts. A level outside this tuple
+# ranks below all of them: it never meets a minimum (fail closed).
+PROTECTION_ORDER = ("none", "same_process_only", "partial_macos", "blackbox_macos", "partial", "blackbox")
+DEFAULT_MIN_PROTECTION = "same_process_only"
+
+
+def protection_rank(level: str) -> int:
+    return PROTECTION_ORDER.index(level) if level in PROTECTION_ORDER else -1
+
+
+def meets_minimum(level: str, minimum: str) -> bool:
+    return protection_rank(level) >= protection_rank(minimum) >= 0
+
+
+# J1 rejections that do not mean "this run was refused": they report an earlier verdict, a pending
+# attempt, or (SHA_BOUND_ELSEWHERE, design AC12) that the old verdict follows the sha; the ledger
+# still decides
+NOT_A_REFUSAL = ("PRIOR_VERDICT", "ATTEMPT_PENDING", L.SHA_BOUND_ELSEWHERE)
 CODE_UNRECOGNIZED = "CODE_UNRECOGNIZED"
 NO_CHECK_J0 = ("STALE_HEAD", "DRAFT_NOT_RUN")
 J0_CODES = (
@@ -66,7 +87,7 @@ def _tables() -> tuple[frozenset[str], frozenset[str]]:
 RUN_CODES, PROTECTIONS = _tables()
 KNOWN_CODES = frozenset(
     (*J0_CODES, *J1_REJECT_CODES, J1_INCOMPLETE, L.LEDGER_CONFLICT, L.LEDGER_VERDICT_UNSIGNED, L.LEDGER_VERDICT_STRANDED, L.ATTEMPT_LOST,
-     "VERIFIED", L.LEDGER_UNAVAILABLE, L.LEDGER_KEY_MISSING)
+     "VERIFIED", L.LEDGER_UNAVAILABLE, L.LEDGER_KEY_MISSING, PROTECTION_BELOW_MINIMUM)
 ) | RUN_CODES
 
 
@@ -169,6 +190,8 @@ class Check:
     protection: str = "none"
     note_bound_issue: int | None = None  # set: create the separate, non-required note check
     skipped: int = 0  # ledger refs skipped as unclassifiable (non-fatal), for the summary line
+    min_protection: str = ""  # the required minimum, shown in the title when it was not met
+    prior_verdict: bool = False  # an earlier verdict exists for the sha but this run's refusal won
 
     def __post_init__(self) -> None:
         if self.conclusion is not None and self.conclusion not in CONCLUSIONS:
@@ -184,6 +207,7 @@ def decide_check(
     j1: J1,
     written: dict[tuple[str, int], str],
     ledger_error: str = L.LEDGER_UNAVAILABLE,
+    min_protection: str = DEFAULT_MIN_PROTECTION,
 ) -> Check:
     """``ledger``: read again after the writes, right before creating the check (None: could
     not read it). ``written``: (version, n) -> outcome of each own-claim verdict write this J2
@@ -214,9 +238,17 @@ def decide_check(
     own = [ledger.verdicts[k] for k in written if k in ledger.verdicts]
     if any(o == L.LEDGER_CONFLICT for o in written.values()):
         return Check(FAILURE, L.LEDGER_CONFLICT, **title)
+    result = j1.result if j1.complete else None
+    if result is not None and result["outcome"] == "rejected" and result["code"] not in NOT_A_REFUSAL:
+        # this run's refusal wins: an earlier verdict for the sha is mentioned, never promoted
+        return _refusal(result["code"], bool(verdicts), title)
     if verdicts:  # rows 3-6: the sha's counted verdicts decide, any non-VERIFIED fails
         protections = {v.protection for v in verdicts}
         if L.aggregate(verdicts):
+            lowest = min(protections, key=protection_rank)
+            if not meets_minimum(lowest, min_protection):
+                return Check(FAILURE, PROTECTION_BELOW_MINIMUM, protection=lowest,
+                             min_protection=min_protection, **title)  # fmt: skip
             protection = protections.pop() if len(protections) == 1 else "none"
             return Check(SUCCESS, "VERIFIED", protection=protection, **title)
         mine = [v for v in own if L.counted(v) and v.status != "VERIFIED"]
@@ -231,12 +263,15 @@ def decide_check(
         return Check(FAILURE, J1_INCOMPLETE, **title)
     if j1.result["outcome"] == "ran":  # J1 says it ran, but no claim of this run: never trusted
         return Check(FAILURE, L.LEDGER_CONFLICT, **title)
-    code = j1.result["code"]
+    return _refusal(j1.result["code"], False, title)
+
+
+def _refusal(code: str, prior_verdict: bool, title: dict[str, Any]) -> Check:
     if code == L.SHA_BOUND_ELSEWHERE:  # row 9: no required check; the note check shows why
-        return Check(None, code, **title)
+        return Check(None, code, prior_verdict=prior_verdict, **title)
     if code in NO_CHECK_J0:  # J1 saw the head move on: the newer run reports, as for J0
-        return Check(None, code, **title)
-    return Check(FAILURE, public_code(code), **title)
+        return Check(None, code, prior_verdict=prior_verdict, **title)
+    return Check(FAILURE, public_code(code), prior_verdict=prior_verdict, **title)
 
 
 def render_j1(obj: dict[str, Any]) -> str:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Thin git layer over the ledger repository, and J1's ledger steps (design v2.2, section 3).
 
-J1 (claim deploy key, over SSH) and J2 (App token, over HTTPS) read and write the ledger the same
+J1 (claim deploy key) and J2 (verdict deploy key), both over SSH, read and write the ledger the same
 way: fetch the config file and the bind/, claim/ and verdict/ tags into a private scratch
 repository, and push a new lightweight tag pointing at a parentless commit whose message is the
 entry. Every write that fails or whose result is unknown is followed by a fresh read; the rules in
@@ -14,16 +14,14 @@ J1 usage (prints one line of JSON with fixed values only; exit 0 go on, 2 stop, 
     python3 -I ledger_io.py j1-claim  (same) --pr N --run-id N --j1-attempt N
 
 The ledger URL comes from ``ACCEPT_LEDGER_URL`` (empty: LEDGER_NOT_CONFIGURED); the SSH key file
-from ``ACCEPT_LEDGER_SSH_KEY`` and known hosts from ``ACCEPT_LEDGER_KNOWN_HOSTS``. A token (``token=``) is sent as an HTTP header through git's environment, never in argv; J2 does
-not use it (it needs the verdict key).
+from ``ACCEPT_LEDGER_SSH_KEY`` and known hosts from ``ACCEPT_LEDGER_KNOWN_HOSTS``. The ``token=`` argument is not used by J1 or J2.
 
 Verdict signatures: the ledger's ruleset does not restrict deploy-key pushes, so the ledger alone
 cannot show that a verdict tag came from J2. With ``sign=True`` (J2, which must also hold an
 ``ssh_key``) the verdict commit is SSH-signed with that key, and ``read`` honours only verdict
 commits whose signature verifies against that key's public half (``git verify-commit``); any
 other verdict (unsigned, other key, bad signature) is left out of ``Ledger.verdicts`` and listed
-in ``Ledger.unsigned``. Claims and binds are never signed. A reader without ``sign`` (J1, the
-token path) neither signs nor checks, and a token-path verdict is not honoured by a signing reader.
+in ``Ledger.unsigned``. Claims and binds are never signed. A reader without ``sign`` (J1) neither signs nor checks.
 """
 
 from __future__ import annotations

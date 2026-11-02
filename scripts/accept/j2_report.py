@@ -15,6 +15,8 @@ outputs through ``env:``, never into ``run:``); each is checked for shape before
     ACCEPT_J1_JOB_NAME       J1's job name, to find its attempt and status through the API
     ACCEPT_LEDGER_URL        ledger repository (https://github.com/<owner>/<name>.git or
                              git@github.com:<owner>/<name>.git); empty: LEDGER_NOT_CONFIGURED
+    ACCEPT_MIN_PROTECTION    lowest protection level a VERIFIED may have (j2_table.PROTECTION_ORDER;
+                             empty: same_process_only); a lower or unknown level fails the check
     ACCEPT_CHECK_NAME, ACCEPT_NOTE_CHECK_NAME   names of the required and the note check
     ACCEPT_APP_TOKEN         App installation token for the target repository (check runs,
                              job state)
@@ -132,7 +134,10 @@ def title(check: T.Check) -> str:
         parts.append(f"issue #{check.issue}")
     if check.version is not None:
         parts.append(f"tests {check.version[:8]}")
-    parts += [f"protection {T.public_protection(check.protection)}", "human review still required"]
+    parts.append(f"protection {T.public_protection(check.protection)}")
+    if check.code == T.PROTECTION_BELOW_MINIMUM:
+        parts.append(f"minimum {T.public_protection(check.min_protection)}")
+    parts.append("human review still required")
     return " · ".join(parts)
 
 
@@ -144,6 +149,8 @@ def create_checks(api: Api, env: dict[str, Any], check: T.Check) -> bool:
         summary = ("Passed the acceptance check. Human review is still required."
                    if check.conclusion == T.SUCCESS else
                    "Did not pass the acceptance check. Details stay on the runner.")  # fmt: skip
+        if check.prior_verdict:
+            summary += " An earlier verdict for this commit is in the ledger; this run's refusal wins."
         if check.skipped:
             summary += f" Ledger records skipped: {check.skipped}."
         body = {"name": env["check_name"], "head_sha": env["sha"], "status": "completed",
@@ -167,6 +174,7 @@ def read_env(environ: dict[str, str]) -> dict[str, Any] | None:
     ok = ok and all(_INT.match(get(k)) for k in ("ACCEPT_TARGET_REPO_ID", "ACCEPT_RUN_ID"))
     ok = ok and (not j0_code or bool(L._CODE.match(j0_code))) and (not issue or bool(_INT.match(issue)))
     ok = ok and all(_NAME.match(get(k)) for k in ("ACCEPT_J1_JOB_NAME", "ACCEPT_CHECK_NAME", "ACCEPT_NOTE_CHECK_NAME"))
+    ok = ok and (not get("ACCEPT_MIN_PROTECTION") or get("ACCEPT_MIN_PROTECTION") in T.PROTECTION_ORDER)
     ok = ok and (not get("ACCEPT_LEDGER_URL") or bool(_HTTPS_URL.match(get("ACCEPT_LEDGER_URL"))))
     if not ok or not get("ACCEPT_APP_TOKEN"):
         return None
@@ -179,6 +187,7 @@ def read_env(environ: dict[str, str]) -> dict[str, Any] | None:
         "ledger_url": get("ACCEPT_LEDGER_URL"), "check_name": get("ACCEPT_CHECK_NAME"),
         "note_check_name": get("ACCEPT_NOTE_CHECK_NAME"), "token": get("ACCEPT_APP_TOKEN"),
         "ledger_key": get("ACCEPT_LEDGER_KEY"),
+        "min_protection": get("ACCEPT_MIN_PROTECTION") or T.DEFAULT_MIN_PROTECTION,
     }  # fmt: skip
 
 
@@ -190,7 +199,8 @@ def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None, no_ledger: str =
     if attempt is None and env["j0_code"] is None:
         attempt = j1_attempt_from_api(api, env["j1_job_name"], env["run_id"])
     j1 = T.J1(env["j1_job_success"], result, attempt)
-    common = {"sha": env["sha"], "j0_code": env["j0_code"], "pr_issue": env["pr_issue"], "j1": j1}
+    common = {"sha": env["sha"], "j0_code": env["j0_code"], "pr_issue": env["pr_issue"], "j1": j1,
+              "min_protection": env.get("min_protection", T.DEFAULT_MIN_PROTECTION)}
     if env["j0_code"] in T.NO_CHECK_J0:
         return T.decide_check(None, written={}, **common)
     if io is None:

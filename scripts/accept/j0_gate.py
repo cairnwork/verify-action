@@ -133,7 +133,7 @@ def decide(api: Api, event: dict[str, Any], target_branch: str, hosted: bool) ->
     author = (pr.get("user") or {}).get("login")
     if not isinstance(author, str) or not _LOGIN.match(author):
         raise Undecided("api")
-    out["author"] = author
+    out["author"] = author  # only the PR opener is compared here, not the authors of its commits
     if author == DEPENDABOT:
         return stop("DEPENDABOT_UNSUPPORTED")
     if (pr.get("base") or {}).get("ref") != target_branch:
