@@ -514,8 +514,13 @@ def _locked_venv(ws: Workspace) -> str:
     deps.mkdir(mode=0o700)
     for name in ("pyproject.toml", "uv.lock"):
         (deps / name).write_bytes(_base_blob(ws, name))
-    (VERIFIER_ROOT / "venvs").mkdir(mode=0o750, exist_ok=True)  # setgid group from the root
-    venv = VERIFIER_ROOT / "venvs" / "target"
+    venvs = VERIFIER_ROOT / "venvs"
+    venvs.mkdir(exist_ok=True)  # the group (cairnwork) comes from the setgid root
+    os.chmod(venvs, 0o2750)  # set explicitly: this process runs under umask 077
+    venv = venvs / "target"
+    shutil.rmtree(venv, ignore_errors=True)
+    if venv.exists():
+        raise Reject(jr.RUNNER_SETUP_PROBLEM, "DEPENDENCIES_INSTALL")
     uv_env = {
         "PATH": "/usr/bin:/bin", "HOME": str(ws.cfg.private / "home"), "UV_NO_CONFIG": "1",
         "UV_CACHE_DIR": str(ws.cfg.private / "uv-cache"), "UV_PYTHON_DOWNLOADS": "never",
@@ -526,8 +531,9 @@ def _locked_venv(ws: Workspace) -> str:
          "--no-emit-project", "--no-header", "--no-annotate", "--format", "requirements-txt",
          "--output-file", str(deps / "requirements.txt")],
         [ws.cfg.uv, "venv", "--quiet", "--python", account_python, str(venv)],
+        # copy, not link: the cache is owner-only (CW_PRIVATE), as in j1_host.sh
         [ws.cfg.uv, "pip", "install", "--python", str(venv / "bin" / "python"),
-         "--require-hashes", "--only-binary", ":all:", "--no-deps", "-r",
+         "--require-hashes", "--only-binary", ":all:", "--no-deps", "--link-mode", "copy", "-r",
          str(deps / "requirements.txt")],
     )  # fmt: skip
     for argv in steps:
@@ -536,12 +542,20 @@ def _locked_venv(ws: Workspace) -> str:
         if done.returncode != 0:
             raise Reject(jr.RUNNER_SETUP_PROBLEM, "DEPENDENCIES_INSTALL")
     python = str(venv / "bin" / "python")
-    if _quiet([python, "-I", "-c", "import pytest"]) != 0:
+    if _quiet([python, "-I", "-c", "import pytest"]) != 0:  # the lock has no pytest: add the pinned set
         pinned = HERE / "verifier-requirements.txt"
         argv = [ws.cfg.uv, "pip", "install", "--python", python, "--require-hashes",
-                "--only-binary", ":all:", "--no-deps", "-r", str(pinned)]  # fmt: skip
+                "--only-binary", ":all:", "--no-deps", "--link-mode", "copy", "-r", str(pinned)]  # fmt: skip
         if subprocess.run(argv, env=uv_env, check=False, timeout=600).returncode != 0:  # noqa: S603
             raise Reject(jr.RUNNER_SETUP_PROBLEM, "DEPENDENCIES_INSTALL")
+    # group read for the verifier account, set explicitly (as j1_host.sh does for its own venv)
+    if _quiet(["/bin/chmod", "-R", "u+rwX,g+rX,g-w,o-rwx", str(venv)]) != 0:
+        raise Reject(jr.RUNNER_SETUP_PROBLEM, "DEPENDENCIES_INSTALL")
+    # Cairnwork's own usability check: a confined run *as the verifier account* imports pytest
+    from cairnwork.verifier_account import VerifierAccount
+
+    if not VerifierAccount().available(python):
+        raise Reject(jr.RUNNER_SETUP_PROBLEM, "DEPENDENCIES_UNUSABLE")
     return python
 
 

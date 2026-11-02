@@ -49,6 +49,12 @@ CONFTEST = (
 KEY_CANARY = "keycnry" + "0" * 8  # stand-in deploy key text: must never leave the private dir
 TARGET_REPO_ID, FORK_REPO_ID = 4242001, 4242999
 APP_TOKEN = "dummy-app-token"  # J2's App token stand-in: the fixture API accepts only this
+# A target whose head^ declares dependencies with a uv.lock (the locked-dependency path).
+LOCKED_PYPROJECT = (
+    '[project]\nname = "fixture"\nversion = "0"\nrequires-python = ">=3.12"\n'
+    'dependencies = ["pytest==9.1.1"]\n'
+)
+MIN_CHECKS = 120  # the e2e run fails below this many checks (no silent pass); log-scan reads it
 
 
 def canary_of(seed: str) -> str:
@@ -115,6 +121,14 @@ class Fixture:
         }
         first = commit(work, {"src/calc.py": FIXED}, self.main)
         heads["two"] = commit(work, {"src/calc.py": FIXED + "\n"}, first)
+        git(work, "checkout", "-q", "main")
+        # main moves on: declare dependencies with a lock; one PR builds on that commit
+        (work / "pyproject.toml").write_text(LOCKED_PYPROJECT)
+        uv = shutil.which("uv") or "uv"
+        subprocess.run([uv, "lock", "--quiet", "--python", "/usr/bin/python3", "--directory", str(work)],
+                       check=True, capture_output=True, timeout=600)  # fmt: skip
+        locked_base = commit(work, {})
+        heads["locked"] = commit(work, {"src/calc.py": FIXED}, locked_base)
         git(work, "checkout", "-q", "main")
         self.target = self.root / "target.git"
         git(self.root, "clone", "-q", "--bare", str(work), str(self.target))
@@ -527,6 +541,14 @@ def main() -> int:
            and r.get("code") == "CORE_VERIFIED" and r.get("protection") == "same_process_only")
     c.that("ac1-good", "consumed", r.get("tests_consumed") is True and out.ledger["claim"] == 1)
     leak_checks(c, "ac1-good", out, canary, ran=True)
+    # the locked-dependency path: the target's own lock, usable by the verifier account
+    out = case("locked-deps", "locked")
+    r = out.result or {}
+    c.that("locked-deps", "VERIFIED", r.get("outcome") == "ran" and r.get("code") == "CORE_VERIFIED")
+    venv = Path("/var/lib/cairnwork/venvs/target")
+    c.that("locked-deps", "venv group-readable", venv.is_dir()
+           and (venv.stat().st_mode & 0o057) == 0o050)  # fmt: skip
+    leak_checks(c, "locked-deps", out, canary, ran=True)
     out = case("ac1-ac5-wrong", "wrong")
     r = out.result or {}
     c.that("ac1-ac5-wrong", "FAILED", r.get("outcome") == "ran" and r.get("status") == "FAILED"
@@ -560,6 +582,7 @@ def main() -> int:
            == ["j1.log", "result.json"])  # fmt: skip
 
     wired(c, fx, base, canary)
+    c.that("e2e", f"at least {MIN_CHECKS} checks ran", c.count >= MIN_CHECKS)
     print(f"J1 e2e: {c.count} checks, {len(c.failed)} failed", flush=True)
     return 1 if c.failed else 0
 
@@ -567,4 +590,10 @@ def main() -> int:
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--driver"]:
         sys.exit(driver(Path(sys.argv[2])))
+    if sys.argv[1:2] == ["--canary"]:  # for the log-scan job: one formula, here
+        print(canary_of(sys.argv[2]))
+        sys.exit(0)
+    if sys.argv[1:2] == ["--min-checks"]:
+        print(MIN_CHECKS)
+        sys.exit(0)
     sys.exit(main())

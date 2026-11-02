@@ -60,6 +60,8 @@ class ResultShape(unittest.TestCase):
             {k: ok[k] for k in reversed(ok)},
             {**ok, "code": "TEST_COMMIT_ALREADY_EXPOSED"},  # fine codes never go out
             {**ok, "status": "VERIFIED"},  # VERIFIED needs CORE_VERIFIED
+            {**ok, "status": "VERIFIED", "protection": "same_process_only"},  # ... even when protected
+            {**ok, "code": "CORE_VERIFIED", "protection": "same_process_only"},  # and the other way
             {**ok, "code": "CORE_VERIFIED", "status": "VERIFIED", "protection": "none"},
             {**ok, "tests_consumed": 0},
             {**ok, "head_sha": "A" * 40},
@@ -115,6 +117,8 @@ class Consumed(unittest.TestCase):
         self.assertTrue(c({"error": "INTERNAL"}))  # no field: used
         self.assertTrue(c({"status": "REFUSED"}))  # no field: used
         self.assertTrue(c({"status": "REFUSED", "tests_consumed": "false"}))
+        self.assertTrue(c({"status": "REFUSED", "tests_consumed": 0}))  # only False itself
+        self.assertTrue(c({"status": "REFUSED", "tests_consumed": None}))
         self.assertTrue(c(None))
         marker = self.state / "verify-used-tests" / self.commit
         marker.parent.mkdir()
