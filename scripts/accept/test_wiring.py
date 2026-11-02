@@ -380,14 +380,28 @@ class Workflow(unittest.TestCase):
         self.assertEqual(set(re.findall(r"secrets\.([A-Z_]+)", self.text)),
                          {"TESTS_KEY", "LEDGER_KEY", "REPORT_APP_KEY"})  # fmt: skip
 
+    def code_lines(self):
+        return [line for line in self.text.splitlines() if not line.lstrip().startswith("#")]
+
     def test_actions_pinned(self):
-        for ref in re.findall(r"uses: (\S+)", self.text):
+        for ref in re.findall(r"uses: (\S+)", "\n".join(self.code_lines())):
             self.assertRegex(ref, r"@[0-9a-f]{40}\Z")
 
-    def test_no_event_text_in_run_lines(self):
-        for line in self.text.splitlines():
-            if "${{" in line and "run:" in line:
-                self.fail(line)
+    def test_no_expression_in_run_scripts(self):
+        """Values reach the scripts through env:, never expanded into a run: script."""
+        block = None
+        for line in self.code_lines():
+            indent = len(line) - len(line.lstrip())
+            if block is not None and (indent > block or not line.strip()):
+                self.assertNotIn("${{", line)
+                continue
+            block = None
+            m = re.match(r"(\s+)(?:- )?run: (.*)", line)
+            if m and len(m.group(1)) >= 8:  # a step's run (job outputs named run sit at 6)
+                if m.group(2).strip() in ("|", ">"):
+                    block = len(m.group(1))
+                else:
+                    self.assertNotIn("${{", m.group(2))
         self.assertNotIn("github.event.pull_request.title", self.text)
         self.assertNotIn("github.event.pull_request.body", self.text)
 
