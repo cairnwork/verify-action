@@ -15,7 +15,7 @@ outputs through ``env:``, never into ``run:``); each is checked for shape before
     ACCEPT_J1_JOB_NAME       J1's job name, to find its attempt and status through the API
     ACCEPT_LEDGER_URL        ledger repository (https://github.com/<owner>/<name>.git or
                              git@github.com:<owner>/<name>.git); empty: LEDGER_NOT_CONFIGURED
-    ACCEPT_MIN_PROTECTION    lowest protection level a VERIFIED may have (j2_table.PROTECTION_ORDER;
+    ACCEPT_MIN_PROTECTION    lowest protection level a VERIFIED may have (j2_table.PROTECTION_LEVELS;
                              empty: same_process_only); a lower or unknown level fails the check
     ACCEPT_CHECK_NAME, ACCEPT_NOTE_CHECK_NAME   names of the required and the note check
     ACCEPT_APP_TOKEN         App installation token for the target repository (check runs,
@@ -174,7 +174,7 @@ def read_env(environ: dict[str, str]) -> dict[str, Any] | None:
     ok = ok and all(_INT.match(get(k)) for k in ("ACCEPT_TARGET_REPO_ID", "ACCEPT_RUN_ID"))
     ok = ok and (not j0_code or bool(L._CODE.match(j0_code))) and (not issue or bool(_INT.match(issue)))
     ok = ok and all(_NAME.match(get(k)) for k in ("ACCEPT_J1_JOB_NAME", "ACCEPT_CHECK_NAME", "ACCEPT_NOTE_CHECK_NAME"))
-    ok = ok and (not get("ACCEPT_MIN_PROTECTION") or get("ACCEPT_MIN_PROTECTION") in T.PROTECTION_ORDER)
+    ok = ok and (not get("ACCEPT_MIN_PROTECTION") or get("ACCEPT_MIN_PROTECTION") in T.PROTECTION_LEVELS)
     ok = ok and (not get("ACCEPT_LEDGER_URL") or bool(_HTTPS_URL.match(get("ACCEPT_LEDGER_URL"))))
     if not ok or not get("ACCEPT_APP_TOKEN"):
         return None

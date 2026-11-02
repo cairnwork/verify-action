@@ -286,25 +286,47 @@ class Table(unittest.TestCase):
         check = self.decide(led, j1(j1_result("rejected", code="PRIOR_VERDICT")))
         self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.PRIOR_VERDICT))
 
-    def test_protection_order_matches_the_receipt_levels(self):
+    def test_protection_levels_match_cairnwork_at_least(self):
         import redact_result as R
-        self.assertEqual(set(T.PROTECTION_ORDER), set(R.PROTECTIONS.values()))
-        self.assertEqual(list(T.PROTECTION_ORDER), sorted(T.PROTECTION_ORDER, key=T.protection_rank))
+        self.assertTrue(set(T.PROTECTION_LEVELS) <= set(R.PROTECTIONS.values()))
+        yes = {("same_process_only", "same_process_only"), ("partial", "partial"), ("blackbox", "partial"),
+               ("blackbox", "blackbox_macos"), ("partial", "partial_macos"), ("blackbox_macos", "partial_macos"),
+               ("blackbox_macos", "blackbox_macos"), ("partial_macos", "partial_macos"), ("partial", "same_process_only"),
+               ("blackbox_macos", "same_process_only"), ("blackbox", "partial_macos"), ("partial_macos", "same_process_only"),
+               ("blackbox", "same_process_only"), ("blackbox", "blackbox_macos"), ("blackbox", "partial")}
+        for level in T.PROTECTION_LEVELS:
+            for minimum in T.PROTECTION_LEVELS:
+                self.assertEqual(T.meets_minimum(level, minimum), (level, minimum) in yes or level == minimum,
+                                 (level, minimum))
+        # partial does not meet a blackbox minimum; a macOS grade does not meet a Linux minimum
+        self.assertFalse(T.meets_minimum("partial", "blackbox_macos"))
+        self.assertFalse(T.meets_minimum("blackbox_macos", "blackbox"))
+        self.assertFalse(T.meets_minimum("blackbox_macos", "partial"))
+        for bad in ("none", "", "mystery", "unrecognized"):
+            self.assertFalse(T.meets_minimum(bad, "same_process_only"))
+            self.assertFalse(T.meets_minimum("blackbox", bad))
 
     def test_min_protection(self):
-        led = ledger(bind(), claim(1), verdict(1, protection="same_process_only"))
         j1v = j1(j1_result("rejected", code="PRIOR_VERDICT"))
-        low = T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1v, written={}, min_protection="partial")
+
+        def run(level, minimum):
+            led = ledger(bind(), claim(1), verdict(1, protection=level))
+            return T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1v, written={}, min_protection=minimum)
+
+        low = run("partial", "blackbox_macos")
         self.assertEqual((low.conclusion, low.code), (T.FAILURE, T.PROTECTION_BELOW_MINIMUM))
-        self.assertEqual((low.protection, low.min_protection), ("same_process_only", "partial"))
-        for minimum in ("none", "same_process_only"):
-            ok = T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1v, written={}, min_protection=minimum)
-            self.assertEqual(ok.conclusion, T.SUCCESS)
-        high = ledger(bind(), claim(1), verdict(1, protection="blackbox"))
-        ok = T.decide_check(high, sha=SHA1, j0_code=None, pr_issue=5, j1=j1v, written={}, min_protection="partial")
-        self.assertEqual(ok.conclusion, T.SUCCESS)
+        self.assertEqual((low.protection, low.min_protection), ("partial", "blackbox_macos"))
+        for level, minimum in (("same_process_only", "same_process_only"), ("blackbox", "partial"),
+                               ("blackbox", "blackbox_macos")):
+            self.assertEqual(run(level, minimum).conclusion, T.SUCCESS, (level, minimum))
+        self.assertEqual(run("same_process_only", "partial").code, T.PROTECTION_BELOW_MINIMUM)
+        # applied per verdict: one low verdict among two VERIFIED fails
+        led = ledger(bind(), claim(1), verdict(1, protection="blackbox"), claim(2, k=4, sha=SHA1),
+                     verdict(2, protection="same_process_only", k=5))
+        check = T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1v, written={}, min_protection="partial")
+        self.assertEqual(check.code, T.PROTECTION_BELOW_MINIMUM)
         # the default is same_process_only
-        self.assertEqual(self.decide(led, j1v).conclusion, T.SUCCESS)
+        self.assertEqual(self.decide(ledger(bind(), claim(1), verdict(1)), j1v).conclusion, T.SUCCESS)
 
     def test_min_protection_unknown_level_fails_closed(self):
         led = ledger(bind(), claim(1), verdict(1, protection="mystery"))

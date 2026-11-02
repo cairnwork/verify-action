@@ -58,7 +58,7 @@ on:
         required: false
         default: 1
       min-protection:
-        description: "Lowest receipt protection level a pass may have: none, same_process_only, partial_macos, blackbox_macos, partial or blackbox (weakest first); a lower or unknown level fails the check"
+        description: "Lowest receipt protection level a pass may have: same_process_only, partial_macos, partial, blackbox_macos or blackbox (as Cairnwork's protection.at_least reads them); a level that does not meet it, or an unknown one, fails the check"
         type: string
         required: false
         default: same_process_only
@@ -223,7 +223,7 @@ jobs:
           CW_MIN_PROTECTION: ${{ inputs.min-protection }}
         run: |
           test "$RUNNER_ENVIRONMENT" = "github-hosted"
-          printf '%s' "$CW_MIN_PROTECTION" | grep -q -x -E 'none|same_process_only|partial_macos|blackbox_macos|partial|blackbox'
+          printf '%s' "$CW_MIN_PROTECTION" | grep -q -x -E 'same_process_only|partial_macos|blackbox_macos|partial|blackbox'
           printf '%s' "$CW_VERIFY_ACTION_SHA" | grep -q -x -E '[0-9a-f]{40}'
           if [ -n "$CW_LEDGER_REPO" ]; then
             printf '%s' "$CW_LEDGER_REPO" | grep -q -x -E '[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}'

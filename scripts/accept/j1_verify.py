@@ -725,11 +725,13 @@ def run(cfg: Config, src: Sources, ledger: Ledger | None) -> dict[str, Any]:
         fetch_target(ws)
         check_shape(ws)
         read_tests_tree(ws)
+        # before the ledger read: a refusal of this run must reach J2 even when the sha has an
+        # earlier verdict (PRIOR_VERDICT would otherwise hide it)
+        precheck_public(ws)  # first: a candidate that carries a test file is also out of scope
+        precheck_scope(ws)
         code = ledger.check(cfg.head, cfg.issue, ws.version)
         if code is not None:
             raise Reject(code if code in jr.LEDGER_CODES else "LEDGER_UNAVAILABLE", f"ledger:{code}")
-        precheck_public(ws)  # first: a candidate that carries a test file is also out of scope
-        precheck_scope(ws)
         precheck_host()
         assert ws.task is not None
         python = verifier_python(ws)

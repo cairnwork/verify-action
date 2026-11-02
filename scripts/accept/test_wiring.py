@@ -300,6 +300,19 @@ class J1KeyOrder(unittest.TestCase):
         self.assertEqual(self.events, ["check", "close"])
         self.assertEqual((result["outcome"], result["code"]), ("rejected", L.PRIOR_VERDICT))
 
+    def test_this_runs_refusal_comes_before_the_ledger_verdict(self):
+        # a sha with an earlier verdict (the ledger would say PRIOR_VERDICT) still reports what
+        # this run's candidate did wrong: the prechecks run before the ledger read
+        for fake, code in (("precheck_scope", "PROTECTED_PATH"), ("precheck_scope", "OUT_OF_SCOPE"),
+                           ("precheck_public", "TESTS_ALREADY_PUBLIC")):
+            def refuse(ws, code=code):
+                raise jv.Reject(code)
+
+            self.events.clear()
+            result = self.run_j1(OrderLedger(self.events, check=L.PRIOR_VERDICT), **{fake: refuse})
+            self.assertEqual((result["outcome"], result["code"]), ("rejected", code))
+            self.assertEqual(self.events, ["close"])  # the ledger was never asked
+
     def test_closed_on_a_claim_refusal(self):
         result = self.run_j1(OrderLedger(self.events, claim=(None, L.ATTEMPT_PENDING)))
         self.assertEqual(self.events, ["check", "claim", "close"])

@@ -34,19 +34,25 @@ FINISHED, RUNNING, UNKNOWN = "FINISHED", "RUNNING", "UNKNOWN"
 J1_INCOMPLETE = "J1_INCOMPLETE"
 PROTECTION_BELOW_MINIMUM = "PROTECTION_BELOW_MINIMUM"
 
-# The one ordering of the receipt's protection levels (the names redact_result.PROTECTIONS emits),
-# weakest first. The macOS grades rank below their Linux counterparts. A level outside this tuple
-# ranks below all of them: it never meets a minimum (fail closed).
-PROTECTION_ORDER = ("none", "same_process_only", "partial_macos", "blackbox_macos", "partial", "blackbox")
-DEFAULT_MIN_PROTECTION = "same_process_only"
-
-
-def protection_rank(level: str) -> int:
-    return PROTECTION_ORDER.index(level) if level in PROTECTION_ORDER else -1
+# The protection levels a minimum can name, and the relation between them, copied from Cairnwork's
+# src/cairnwork/protection.py (LEVELS, COVERAGE, at_least). It is a partial order, not a line: the
+# Linux grade is needed unless the minimum carries the _macos suffix, and coverage must not drop.
+# The receipt's "none" (Core never asked) and any other string are outside it and never qualify.
+_NONE, _PARTIAL, _FULL, _MACOS = "same_process_only", "partial", "blackbox", "_macos"
+_COVERAGE = (_NONE, _PARTIAL, _FULL)
+PROTECTION_LEVELS = (_NONE, _PARTIAL + _MACOS, _PARTIAL, _FULL + _MACOS, _FULL)
+DEFAULT_MIN_PROTECTION = _NONE
 
 
 def meets_minimum(level: str, minimum: str) -> bool:
-    return protection_rank(level) >= protection_rank(minimum) >= 0
+    """Does ``level`` meet ``minimum``? Same rule as ``protection.at_least`` in cairnwork
+    (src/cairnwork/protection.py): equal or more coverage, and the Linux grade unless the minimum
+    carries the _macos suffix. An unknown level or minimum never does (fail closed)."""
+    if level not in PROTECTION_LEVELS or minimum not in PROTECTION_LEVELS:
+        return False
+    cov = lambda v: v.removesuffix(_MACOS)  # noqa: E731
+    graded = minimum == _NONE or minimum.endswith(_MACOS) or not level.endswith(_MACOS)
+    return graded and _COVERAGE.index(cov(level)) >= _COVERAGE.index(cov(minimum))
 
 
 # J1 rejections that do not mean "this run was refused": they report an earlier verdict, a pending
@@ -247,9 +253,9 @@ def decide_check(
     if verdicts:  # rows 3-6: the sha's counted verdicts decide, any non-VERIFIED fails
         protections = {v.protection for v in verdicts}
         if L.aggregate(verdicts):
-            lowest = min(protections, key=protection_rank)
-            if not meets_minimum(lowest, min_protection):
-                return Check(FAILURE, PROTECTION_BELOW_MINIMUM, protection=lowest,
+            below = sorted(p for p in protections if not meets_minimum(p, min_protection))
+            if below:
+                return Check(FAILURE, PROTECTION_BELOW_MINIMUM, protection=below[0],
                              min_protection=min_protection, **title)  # fmt: skip
             protection = protections.pop() if len(protections) == 1 else "none"
             return Check(SUCCESS, "VERIFIED", protection=protection, **title)
