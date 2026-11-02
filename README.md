@@ -6,6 +6,8 @@ GitHub composite action to verify offline Cairnwork attestations on pull request
 
 A `VERIFIED` verdict indicates that the attestation for the specified head commit verified offline against the configured public key and the repository history.
 
+Two receipt versions are accepted: v0.1 (a change Cairnwork verified on its own commit) and v0.2 (an external candidate, such as a pull request head, verified with deferred tests; see [v0.2 receipts and `policy`](#v02-receipts-and-policy)).
+
 ## Enforcement and trust model
 
 Under standard `pull_request` triggers, GitHub Actions runs the workflow file from the pull request's head ref, including on forks. A pull request author could modify `.github/workflows` to set `require-when: never` or point `public-key` to their own keypair, and the resulting check run would still satisfy branch protection rules matched by name.
@@ -76,6 +78,19 @@ Multiple keys may be supplied as PEM text separated by blank lines or as a newli
 
 Published keys are listed by `keyid` (the SHA-256 of the raw Ed25519 key, the value in the bundle's signature) at <https://cairnwork.github.io/keys/>, each served as `/keys/<keyid>.pem`. Only a demo drill key is listed today. To rotate, add the new key next to the old one in `vars.CAIRNWORK_PUBLIC_KEY` before the attesting host starts signing with it, and remove the old key only once no pull request still needs an attestation signed by it.
 
+## v0.2 receipts and `policy`
+
+A v0.2 receipt binds the pull request head, the base, the deferred test commit and the tree the verifiers ran. `cairnwork-attest verify` checks it in one of two modes, chosen by whether `repo-path` holds the test commit:
+
+- **full**: the test commit is in the repository; the executed tree is rebuilt from head and tests and must match.
+- **confidential**: the test commit is not in the repository (the tests stay private). A `policy` is required; without one the receipt is rejected with `POLICY_REQUIRED`. The test contents are the signer's word in this mode.
+
+The policy is the receiver's own configuration, never taken from the pull request or the receipt: strict JSON with `rule`, `test_commit`, `core_identity` and `key_id` (and optional keys), as defined by Cairnwork's `docs/ATTESTATION.md` ("Verifying a v0.2 receipt"). Pass it as JSON text (for example `${{ vars.CAIRNWORK_POLICY }}`) or as an absolute file path outside `repo-path`, as for `public-key`. This action only checks that it is a JSON object; `cairnwork-attest` checks the rest, and a policy it cannot use fails with `VERIFIER_ERROR`.
+
+Under a policy, the signing key must be the one the policy pins (`SIGNATURE_INVALID`), and the receipt's test commit and rule must be the policy's (`TEST_SOURCE_MISMATCH`). A v0.1 receipt binds no tests, so it fails under a policy with `TEST_SOURCE_MISMATCH`. Without a policy, a v0.2 receipt in full mode verifies with the tests the signer chose, and a v0.1 receipt with no tests also verifies: if tests must be required, set `policy`. A v0.2 receipt for another commit is reported as `CANDIDATE_MISMATCH`, as for v0.1.
+
+v0.2 receipts and the `policy` input need a `cairnwork-ref` that supports them (the first is `85214150ba903d4126acae73223e965d5e8e1ecc`; pin the cairnwork commit the attesting host uses). Older commits reject a v0.2 receipt as `STATEMENT_SHAPE` and a policy with `VERIFIER_ERROR`.
+
 ## Requirement conditions (`require-when`)
 
 The default requirement condition is `always` (fail-closed).
@@ -102,6 +117,7 @@ Trade-off: `ancestor` allows the target branch to advance after an attestation i
 | `fetch-notes` | Fetch notes ref from origin before verification. | No | `true` |
 | `public-key` | Path to PEM file (absolute, outside `repo-path`) or PEM text. | Yes | — |
 | `core-identity` | Optional path to Core identity JSON pin file (absolute, outside `repo-path`). | No | `""` |
+| `policy` | Receiver policy for v0.2 receipts: JSON text, or a file path (absolute, outside `repo-path`). Required in confidential mode. | No | `""` |
 | `cairnwork-ref` | 40-hex commit of `cairnwork/cairnwork` to install (must be at or after `5819a8c56e19fb32d597f8213a9961f46c3307d4`). | Yes | — |
 | `python-version` | Python version used for cairnwork virtual environment. | No | `3.12` |
 | `require-when` | Requirement condition: `always`, `never`, or advisory `label:<name>`. | No | `always` |
@@ -126,16 +142,16 @@ Trade-off: `ancestor` allows the target branch to advance after an attestation i
 | Code | Verdict | Description |
 | --- | --- | --- |
 | `OK` | `VERIFIED` | Attestation verified against public key and git history. |
-| `BAD_INPUT` | `ERROR` | Input validation failure (non-40-hex SHA, missing required input, invalid format, non-array `pr-labels`, or key path inside `repo-path`). |
+| `BAD_INPUT` | `ERROR` | Input validation failure (non-40-hex SHA, missing required input, invalid format, non-array `pr-labels`, `policy` not a JSON object, or key or policy path inside `repo-path`). |
 | `MISSING_TOOL` | `ERROR` | Required command-line utility (`jq`, `git`, `base64`, `awk`, or at least one of `sha256sum` or `shasum`) is not found on the runner. |
 | `INSTALL_FAILED` | `ERROR` | Fetching `cairnwork` repository or syncing virtual environment dependencies via `uv sync` failed. |
 | `NOTES_FETCH_FAILED` | `ERROR` | Git fetch of the notes ref from origin failed. |
 | `BUNDLE_MISSING` | `REJECTED` / `SKIPPED` | No bundle file or note found for candidate commit (`SKIPPED` when not required). |
 | `BUNDLE_MALFORMED` | `REJECTED` | Bundle is not valid DSSE JSON or statement payload cannot be decoded. |
-| `UNSUPPORTED_PREDICATE_TYPE` | `REJECTED` | The statement `_type` is not `https://in-toto.io/Statement/v1`, or its `predicateType` is not one this action version supports (today `https://cairnwork.github.io/attestation/verified-change/v0.1`). Checked before any predicate field is read; upgrade the action to accept a newer predicate version. |
+| `UNSUPPORTED_PREDICATE_TYPE` | `REJECTED` | The statement `_type` is not `https://in-toto.io/Statement/v1`, or its `predicateType` is not one this action version supports (today `https://cairnwork.github.io/attestation/verified-change/v0.1` and `.../v0.2`). Checked before any predicate field is read; upgrade the action to accept a newer predicate version. |
 | `BASE_NOT_IN_TARGET` | `REJECTED` | `predicate.base_commit` does not satisfy the `check-base` condition against target `base`. |
 | `VERIFIER_ERROR` | `ERROR` | `cairnwork-attest verify` exited with code 2 (usage or IO error), produced malformed/non-JSON stdout, or binary is missing. |
-| `<VERIFIER_CODE>` | `REJECTED` | Verifier rejection code (e.g. `CANDIDATE_MISMATCH`, `SIGNATURE_INVALID`) parsed from `verify --json` stdout when verifier exits 1. |
+| `<VERIFIER_CODE>` | `REJECTED` | Verifier rejection code (e.g. `CANDIDATE_MISMATCH`, `SIGNATURE_INVALID`, and for v0.2 `POLICY_REQUIRED`, `TEST_SOURCE_MISMATCH`) parsed from `verify --json` stdout when verifier exits 1. |
 
 Verifier rejection codes (`<VERIFIER_CODE>`) and details are parsed directly from machine-readable `cairnwork-attest verify --json` output.
 
