@@ -18,7 +18,7 @@ a baseline that sees nothing is a failure, like a breach. What is checked comes 
   the account must find ``/tmp`` (the baseline).
 - ``sandbox_run_root``: as the account inside Cairnwork's own bwrap policy with a writable run
   root (as J1's verifiers run): a write inside the run root lands on the host; writes to host
-  places the account could write without the sandbox do not; the private directory's canary is
+  places the account could write without the sandbox do not reach the host; the private directory's canary is
   unreadable; no TCP connection. Baselines: the runner reads the canary, and the account without
   the sandbox writes the host place.
 
@@ -291,7 +291,8 @@ def judge(obs: dict[str, Any], expected_paths: list[str]) -> dict[str, tuple[boo
             landed = value.get("landed", {})
             ok = (
                 inside.get("run_root_write") is True and value.get("run_root_landed") is True
-                and all(writes.get(p) is False and landed.get(p) is False for p in HOST_PLACES)
+                # a write may succeed inside (bwrap's private /tmp); it must not reach the host
+                and all(p in writes and landed.get(p) is False for p in HOST_PLACES)
                 and any(outside.get(p) is True for p in HOST_PLACES)  # baseline
                 and inside.get("read_private") is False and value.get("runner_reads_canary") is True
                 and inside.get("connect") is False

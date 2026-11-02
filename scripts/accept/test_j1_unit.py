@@ -294,7 +294,7 @@ class WitnessJudge(unittest.TestCase):
             "sandbox_run_root": [
                 self.sandbox(run_root_write=False),
                 {**self.sandbox(), "run_root_landed": False},
-                self.sandbox(host_writes={p: True for p in wj.HOST_PLACES}),
+                {**self.sandbox(), "landed": {wj.HOST_PLACES[1]: True}},  # others unobserved
                 {**self.sandbox(), "landed": {p: True for p in wj.HOST_PLACES}},
                 self.sandbox(host_writes={}),  # a place not observed
                 {**self.sandbox(), "outside_host_writes": {p: False for p in wj.HOST_PLACES}},
@@ -313,6 +313,11 @@ class WitnessJudge(unittest.TestCase):
             obs = self.good()
             del obs[name]
             self.assertFalse(self.verdict(obs)[name], name)
+
+    def test_a_write_kept_inside_the_sandbox_is_fine(self):
+        obs = {**self.good(), "sandbox_run_root": self.sandbox(
+            host_writes={p: True for p in wj.HOST_PLACES})}  # fmt: skip
+        self.assertTrue(self.verdict(obs)["sandbox_run_root"])
 
     def test_no_expected_paths_is_red(self):
         self.assertFalse(wj.judge(self.good(), [])["post_run_paths"][0])
