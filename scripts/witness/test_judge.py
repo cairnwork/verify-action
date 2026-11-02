@@ -180,11 +180,16 @@ CASES = [
      put("sandbox", "identity", "status", {"CapEff": "000001ffffffffff", "NoNewPrivs": "1"}),
      {"0-confinement"}),
     ("sandbox runs as another uid", put("sandbox", "identity", "uid", 1001), {"0-confinement"}),
-    ("sandbox probe error", put("sandbox", {"error": "no-json rc=2"}), {"probe-sandbox"}),
+    ("sandbox probe error", put("sandbox", {"error": "no-json"}), {"probe-sandbox"}),
+    ("runner probe error", put("runner", {"error": "no-json"}), {"probe-runner"}),
+    ("account probe error", put("account", {"error": "no-json"}), {"probe-account"}),
+    ("runner probe timeout", put("runner", {"error": "timeout"}), {"probe-runner"}),
+    ("account probe crashed", put("account", {"error": "OSError"}), {"probe-account"}),
 ]
 
 
 def main() -> int:
+    extra = 0
     lists = {"files": allowlist(os.path.join(HERE, "readable-allowlist.txt")),
              "sockets": allowlist(os.path.join(HERE, "socket-allowlist.txt"))}
     bad = 0
@@ -196,6 +201,28 @@ def main() -> int:
         ok = (not verdicts.failed) if not must_fail else (verdicts.failed and must_fail <= failing)
         bad += not ok
         print(f"{'ok  ' if ok else 'BAD '} {name}: failing={','.join(sorted(failing)) or '-'}")
+    # A category that only shares a string prefix with an allowed entry is not allowed.
+    prefix_lists = {"files": ["/etc/hosts", "/opt/az"], "sockets": []}
+    for cat, must_pass in (("/opt/az", True), ("/opt/az/sub", True), ("/opt/azure-x", False)):
+        case = clean_case()
+        case["sandbox"]["walk"]["readable"] = {ALLOWED_CAT: 1, cat: 1}
+        verdicts = judge(case, prefix_lists, UID)
+        prefix_ok = (not verdicts.failed) if must_pass else ("2-readable" in verdicts.failing())
+        bad += not prefix_ok
+        extra += 1
+        print(f"{'ok  ' if prefix_ok else 'BAD '} allowlist entry /opt/az vs category {cat}")
+    # A failing probe prints a fixed code only: nothing from its stderr or its own error text.
+    leak = "LEAK-MARKER-9f3"
+    for label in ("runner", "sandbox", "account"):
+        case = clean_case()
+        case[label] = {"error": f"no-json rc=2 {leak}", "stderr_tail": [leak, "line two"]}
+        lines = judge(case, lists, UID).lines
+        fixed_ok = (bool(lines) and not any(leak in line or "line two" in line for line in lines)
+                    and any(f"probe-{label}" in line and "error_class=" in line
+                            for line in lines))
+        bad += not fixed_ok
+        extra += 1
+        print(f"{'ok  ' if fixed_ok else 'BAD '} {label} probe error prints a fixed code only")
     # A path name with a line break must not start a new log line.
     case = clean_case()
     case["sandbox"]["walk"]["readable"] = {"/etc/x\n::warning::y": 1}
@@ -203,7 +230,8 @@ def main() -> int:
     newline_ok = all("\n" not in line and "\r" not in line for line in lines)
     bad += not newline_ok
     print(f"{'ok  ' if newline_ok else 'BAD '} control characters are replaced in output")
-    print(f"{len(CASES) + 1 - bad}/{len(CASES) + 1} self-test cases as expected")
+    total = len(CASES) + 1 + extra
+    print(f"{total - bad}/{total} self-test cases as expected")
     return 1 if bad else 0
 
 
