@@ -261,7 +261,7 @@ if [[ -n "$BUNDLE_PATH" ]]; then
   BUNDLE_FILE="$BUNDLE_PATH"
 else
   if [[ "$FETCH_NOTES" == "true" ]]; then
-    if ! git fetch origin "+${NOTES_REF}:${NOTES_REF}" 2>/dev/null; then
+    if ! git fetch -- origin "+${NOTES_REF}:${NOTES_REF}" 2>/dev/null; then
       [[ "$IS_REQUIRED" == "true" ]] && fail "NOTES_FETCH_FAILED" "git fetch origin +${NOTES_REF}:${NOTES_REF} failed" "ERROR"
       skip "NOTES_FETCH_FAILED" "git fetch origin +${NOTES_REF}:${NOTES_REF} failed"
     fi

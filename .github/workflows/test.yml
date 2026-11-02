@@ -243,7 +243,8 @@ jobs:
           test "${{ steps.test_notes_path.outputs.verdict }}" = "VERIFIED"
           test "${{ steps.test_notes_path.outputs.code }}" = "OK"
 
-      # Notes fetch failure relies on cairnwork/demo-target having no refs/notes/cairnwork.
+      # Notes fetch failure uses a notes ref cairnwork/demo-target does not have (it has
+      # refs/notes/cairnwork now, so fetching that ref no longer fails).
       - name: Clean up local note before notes fetch failure test
         run: |
           cd target
@@ -263,6 +264,7 @@ jobs:
           candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
           repo-path: target
+          notes-ref: refs/notes/cairnwork-selftest-absent
           fetch-notes: 'true'
           require-when: always
           cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
