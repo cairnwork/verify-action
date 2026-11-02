@@ -3,3 +3,38 @@
 # or lies under it. A readable category not listed here fails the readable-files witness, so a
 # runner image that starts exposing a new place shows up as a failure to review, not a pass.
 # Measured on ubuntu-24.04 (GitHub-hosted); each entry is world-readable system or tool content.
+# Measured 2026-11-02 (runner 2.338.2, run 41403350773): 272 categories, none under the runner's
+# home, temp, workspace or install directory. Coarse entries are system configuration and package
+# state; /opt, /home, /run and /var/log are listed one by one so a new place there fails.
+/etc
+/imagegeneration
+/var/.updated
+/var/backups
+/var/cache
+/var/lib
+/var/www/html
+/var/log/alternatives.log
+/var/log/apt
+/var/log/dpkg.log
+/var/log/fontconfig.log
+/var/log/landscape
+/var/log/lastlog
+/var/log/sysstat
+/var/log/waagent.log
+/var/log/wtmp
+# Homebrew's shared prefix (not the runner's home, which is 0750 and unreadable).
+/home/linuxbrew/.linuxbrew
+# resolv.conf, bound back read-only by Cairnwork's private /run (bwrap_private).
+/run/systemd/resolve
+# Image tool trees. /opt/hostedtoolcache is mode 0777 on the host: readable here, not writable
+# inside the sandbox (the tool cache witness checks that).
+/opt/actionarchivecache
+/opt/az
+/opt/google
+/opt/hca
+/opt/hostedtoolcache
+/opt/microsoft
+/opt/pipx
+/opt/post-generation
+/opt/primer
+/opt/runner-cache
