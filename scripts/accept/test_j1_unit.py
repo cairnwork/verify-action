@@ -253,7 +253,19 @@ class WitnessJudge(unittest.TestCase):
             "tasks": {"few_in_scope": True, "many_in_scope": False, "many_outside": True},
             "post_run_paths": {p: {"exists": True, "account_writable": False} for p in self.PATHS},
             "writable": ["/tmp", "/var/tmp", "/dev/shm"],
+            "sandbox_run_root": self.sandbox(),
         }
+
+    @staticmethod
+    def sandbox(**inside):
+        places = wj.HOST_PLACES
+        return {
+            "inside": {"run_root_write": True, "host_writes": {p: False for p in places},
+                       "read_private": False, "connect": False, **inside},
+            "landed": {p: False for p in places}, "run_root_landed": True,
+            "outside_host_writes": {places[0]: True, places[1]: False, places[2]: True},
+            "runner_reads_canary": True,
+        }  # fmt: skip
 
     def verdict(self, obs):
         return {name: ok for name, (ok, _note) in wj.judge(obs, self.PATHS).items()}
@@ -279,6 +291,18 @@ class WitnessJudge(unittest.TestCase):
                 {p: {"exists": False, "account_writable": False} for p in self.PATHS},
             ],
             "writable": [["/tmp", "/usr/local/bin"], ["/var/tmp"], []],
+            "sandbox_run_root": [
+                self.sandbox(run_root_write=False),
+                {**self.sandbox(), "run_root_landed": False},
+                self.sandbox(host_writes={p: True for p in wj.HOST_PLACES}),
+                {**self.sandbox(), "landed": {p: True for p in wj.HOST_PLACES}},
+                self.sandbox(host_writes={}),  # a place not observed
+                {**self.sandbox(), "outside_host_writes": {p: False for p in wj.HOST_PLACES}},
+                self.sandbox(read_private=True),
+                {**self.sandbox(), "runner_reads_canary": False},
+                self.sandbox(connect=True),
+                self.sandbox(connect=None),
+            ],
         }
         for name, values in cases.items():
             for value in values:

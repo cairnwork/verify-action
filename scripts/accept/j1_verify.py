@@ -634,7 +634,6 @@ def run(cfg: Config, src: Sources, ledger: Ledger | None) -> dict[str, Any]:
     home.mkdir(mode=0o700, exist_ok=True)
     git = jg.Git(home=home, env=ssh_env(cfg) if cfg.tests_key else {}, allow_file=src.allow_file)
     ws = Workspace(cfg, src, git)
-    claimed = 0
     try:
         fetch_target(ws)
         check_shape(ws)
@@ -650,11 +649,6 @@ def run(cfg: Config, src: Sources, ledger: Ledger | None) -> dict[str, Any]:
         commit, bundle, targets = build_tests(ws)
         state = make_state(cfg, python, ws.task.test_root)
         import_tests(cfg, state, ws.target, bundle, commit)
-        number, code = ledger.bind_and_claim(cfg.head, cfg.issue, ws.version)
-        if number is None:
-            code = code or "LEDGER_UNAVAILABLE"
-            raise Reject(code if code in jr.LEDGER_CODES else "LEDGER_UNAVAILABLE", f"ledger:{code}")
-        claimed = number
     except Reject as stop:
         log(f"rejected: {stop.fine}")
         return jr.rejected(**ids, code=stop.code)
@@ -663,6 +657,16 @@ def run(cfg: Config, src: Sources, ledger: Ledger | None) -> dict[str, Any]:
         return jr.rejected(**ids, code=jr.RUNNER_SETUP_PROBLEM)
     finally:
         drop_keys(cfg)
+    # Steps 7-8. A clean (None, code) answer means nothing was claimed; an exception here may
+    # leave a claim behind, so it propagates and J1 gives no result (J2: J1_INCOMPLETE).
+    number, code = ledger.bind_and_claim(cfg.head, cfg.issue, ws.version)
+    if number is None:
+        code = code or "LEDGER_UNAVAILABLE"
+        log(f"rejected: ledger:{code}")
+        return jr.rejected(**ids, code=code if code in jr.LEDGER_CODES else "LEDGER_UNAVAILABLE")
+    if type(number) is not int or number < 1:
+        raise ValueError("claim number")
+    claimed = number
     # claimed: from here on a missing answer counts the tests as used
     log(f"claimed {claimed}; running")
     core_file = run_core(cfg, ws, state, commit, targets)

@@ -16,6 +16,14 @@ a baseline that sees nothing is a failure, like a breach. What is checked comes 
   exist and the account cannot write them.
 - ``writable``: every directory (to depth 3) the account can write is on ``ALLOWED_WRITABLE``;
   the account must find ``/tmp`` (the baseline).
+- ``sandbox_run_root``: as the account inside Cairnwork's own bwrap policy with a writable run
+  root (as J1's verifiers run): a write inside the run root lands on the host; writes to host
+  places the account could write without the sandbox do not; the private directory's canary is
+  unreadable; no TCP connection. Baselines: the runner reads the canary, and the account without
+  the sandbox writes the host place.
+
+The account runs are made by Cairnwork's own code (``VerifierAccount.wrap``; with no policy that
+is its allow-all probe, i.e. the account outside the sandbox).
 
 Prints one PASS or FAIL line per witness with counts and fixed labels only; exits 1 on any FAIL.
 """
@@ -36,7 +44,10 @@ sys.path.insert(0, str(HERE))
 
 import j1_verify as jv  # noqa: E402
 
-EXPECTED = ("apparmor", "groups", "firewall", "memory", "tasks", "post_run_paths", "writable")
+EXPECTED = (
+    "apparmor", "groups", "firewall", "memory", "tasks", "post_run_paths", "writable",
+    "sandbox_run_root",
+)
 PROFILE = "cairnwork-bwrap"
 # Directories the account may write on a GitHub-hosted ubuntu-24.04 image. /opt/hostedtoolcache is
 # 0777 there (S0-10): J1 runs nothing from it after the candidate (see post_run_paths).
@@ -50,7 +61,7 @@ MANY, FEW = 3000, 50  # threads; J1's TasksMax is 2048
 
 ACCOUNT_PROBE = r"""
 import json, os, socket, sys
-cfg = json.loads(sys.argv[1])
+cfg = json.loads(open(sys.argv[1]).read())
 out = {"connect": None, "writable": [], "post_run": {}}
 try:
     socket.create_connection((cfg["ip"], 443), timeout=5).close()
@@ -69,6 +80,32 @@ for path in cfg["post_run"]:
     out["post_run"][path] = os.access(path, os.W_OK)
 print(json.dumps(out))
 """
+SANDBOX_PROBE = r"""
+import json, os, socket, sys
+cfg = json.loads(open(sys.argv[1]).read())
+def write(path):
+    try:
+        with open(path, "w") as handle:
+            handle.write("x")
+        return True
+    except OSError:
+        return False
+out = {"run_root_write": write(cfg["run_root_file"]),
+       "host_writes": {p: write(p) for p in cfg["host_places"]}}
+try:
+    open(cfg["private_canary"]).read()
+    out["read_private"] = True
+except OSError:
+    out["read_private"] = False
+try:
+    socket.create_connection((cfg["ip"], 443), timeout=5).close()
+    out["connect"] = True
+except OSError:
+    out["connect"] = False
+print(json.dumps(out))
+"""
+HOST_PLACES = ("/var/tmp/cw-j1-witness", "/opt/hostedtoolcache/cw-j1-witness", "/tmp/cw-j1-witness")
+INNER_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LANG": "C.UTF-8"}
 ALLOC = "import sys; b = bytearray(int(sys.argv[1])); b[::4096] = b'x' * len(b[::4096])"
 THREADS = (
     "import sys, threading, time\n"
@@ -97,6 +134,69 @@ def post_run_paths(private: Path) -> list[str]:
     })  # fmt: skip
 
 
+def _stage(files: dict[str, str]) -> Path:
+    """Probe files the account can read (nothing private in them), under the shared root."""
+    stage = jv.VERIFIER_ROOT / "witness-j1"
+    stage.mkdir(exist_ok=True)
+    os.chmod(stage, 0o755)
+    for name, text in files.items():
+        (stage / name).write_text(text)
+        os.chmod(stage / name, 0o644)
+    return stage
+
+
+def _json_of(argv: list[str]) -> dict[str, Any] | None:
+    try:
+        done = subprocess.run(argv, capture_output=True, check=False, timeout=900, cwd="/")  # noqa: S603
+        value = json.loads(done.stdout)
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _sandbox_run_root(private: Path, stage: Path, ip: str, account_wrap) -> dict[str, Any]:
+    """J1's verifier shape: Cairnwork's bwrap policy, read root = the stage, write root = a run
+    root the account may write (group cairnwork, setgid), as Cairnwork opens a run's scratch."""
+    from cairnwork_sandbox import bwrap
+
+    run_root = jv.VERIFIER_ROOT / "runs" / "witness-j1"
+    run_root.mkdir(exist_ok=True)
+    os.chmod(run_root, 0o2770)
+    canary = private / "witness-canary"
+    canary.write_text("cnry-witness-private\n")
+    os.chmod(canary, 0o600)
+    config = {"run_root_file": str(run_root / "probe"), "host_places": list(HOST_PLACES),
+              "private_canary": str(canary), "ip": ip}  # fmt: skip
+    (stage / "sandbox.json").write_text(json.dumps(config))
+    os.chmod(stage / "sandbox.json", 0o644)
+    policy = bwrap.BACKEND.policy(read_roots=(stage,), write_roots=(run_root,),
+                                  mask_home_credentials=False)  # fmt: skip
+    policy_path = stage / "policy"
+    policy_path.write_text(policy.text)
+    os.chmod(policy_path, 0o644)
+    argv = ["/usr/bin/python3", "-I", str(stage / "sandbox.py"), str(stage / "sandbox.json")]
+    inside = _json_of(account_wrap(argv, policy_path, INNER_ENV))
+    landed = {p: os.path.exists(p) for p in HOST_PLACES}
+    run_root_landed = (run_root / "probe").exists()
+    for place in HOST_PLACES:  # the account's own files: remove through the sudoers rm rule
+        subprocess.run(["sudo", "-n", "-u", jv.VERIFIER_USER, "/bin/rm", "-f", place],
+                       capture_output=True, check=False)  # fmt: skip
+    outside = _json_of(account_wrap(argv, None, INNER_ENV))  # baseline: no sandbox
+    for place in HOST_PLACES:
+        subprocess.run(["sudo", "-n", "-u", jv.VERIFIER_USER, "/bin/rm", "-f", place],
+                       capture_output=True, check=False)  # fmt: skip
+    try:
+        runner_reads = bool(canary.read_text())
+    except OSError:
+        runner_reads = False
+    if inside is None or outside is None:
+        return {}
+    return {"sandbox_run_root": {
+        "inside": inside, "landed": landed, "run_root_landed": run_root_landed,
+        "outside_host_writes": outside.get("host_writes", {}), "runner_reads_canary": runner_reads,
+    }}  # fmt: skip
+
+
 def observe(private: Path) -> dict[str, Any]:
     import grp
     import pwd
@@ -121,20 +221,20 @@ def observe(private: Path) -> dict[str, Any]:
         runner_connect = True
     except OSError:
         runner_connect = False
-    paths = post_run_paths(private)
-    probe = ["sudo", "-n", "-u", jv.VERIFIER_USER, "bwrap", "--bind", "/", "/", "--dev", "/dev",
-             "--proc", "/proc", "--die-with-parent", "--", "/usr/bin/python3", "-I", "-c",
-             ACCOUNT_PROBE, json.dumps({"ip": ip, "skip": list(SKIP_WALK), "post_run": paths})]  # fmt: skip
-    done = subprocess.run(probe, capture_output=True, check=False, timeout=900, cwd="/")  # noqa: S603
-    try:
-        seen = json.loads(done.stdout)
-    except ValueError:
-        seen = None
+    from cairnwork.verifier_account import VerifierAccount
+
+    account_wrap = VerifierAccount().wrap
+    stage = _stage({"account.py": ACCOUNT_PROBE, "sandbox.py": SANDBOX_PROBE,
+                    "account.json": json.dumps({"ip": ip, "skip": list(SKIP_WALK),
+                                                "post_run": post_run_paths(private)})})  # fmt: skip
+    argv = ["/usr/bin/python3", "-I", str(stage / "account.py"), str(stage / "account.json")]
+    seen = _json_of(account_wrap(argv, None, INNER_ENV))
     if isinstance(seen, dict):
         obs["firewall"] = {"baseline": runner_connect, "account": seen["connect"]}
         obs["writable"] = seen["writable"]
         obs["post_run_paths"] = {p: {"exists": os.path.exists(p), "account_writable": w}
                                  for p, w in seen["post_run"].items()}  # fmt: skip
+    obs.update(_sandbox_run_root(private, stage, ip, account_wrap))
     py, scope = sys.executable, jv.scope_argv()
     obs["memory"] = {
         "small_in_scope": _ok([*scope, py, "-I", "-c", ALLOC, str(SMALL)]),
@@ -184,6 +284,24 @@ def judge(obs: dict[str, Any], expected_paths: list[str]) -> dict[str, tuple[boo
             extra = sorted(found - ALLOWED_WRITABLE)
             out[name] = ("/tmp" in found and not extra,
                          f"{len(found)} writable, baseline_tmp={'/tmp' in found}, unexpected={extra}")  # fmt: skip
+        elif name == "sandbox_run_root":
+            inside = value.get("inside", {})
+            writes = inside.get("host_writes", {})
+            outside = value.get("outside_host_writes", {})
+            landed = value.get("landed", {})
+            ok = (
+                inside.get("run_root_write") is True and value.get("run_root_landed") is True
+                and all(writes.get(p) is False and landed.get(p) is False for p in HOST_PLACES)
+                and any(outside.get(p) is True for p in HOST_PLACES)  # baseline
+                and inside.get("read_private") is False and value.get("runner_reads_canary") is True
+                and inside.get("connect") is False
+            )  # fmt: skip
+            out[name] = (ok, (f"run_root={inside.get('run_root_write')}/{value.get('run_root_landed')}"
+                              f" host_writes={sum(1 for v in writes.values() if v is not False)}"
+                              f" landed={sum(1 for v in landed.values() if v is not False)}"
+                              f" baseline_writes={sum(1 for v in outside.values() if v is True)}"
+                              f" read_private={inside.get('read_private')}"
+                              f" connect={inside.get('connect')}"))  # fmt: skip
     return out
 
 
