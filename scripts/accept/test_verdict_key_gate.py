@@ -12,7 +12,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import j1_result as jr  # noqa: E402
 import j1_verify as jv  # noqa: E402
 import ledger as L  # noqa: E402
+import j2_table as T  # noqa: E402
 import test_j1_unit as TU  # noqa: E402
+import test_ledger as TL  # noqa: E402
 import test_wiring as TW  # noqa: E402
 
 
@@ -27,8 +29,16 @@ class Flag(unittest.TestCase):
         for value in ("True", "1", "yes", "false "):
             self.assertIsNone(jv.read_config(TU.good_env(Path("/tmp/p"), CW_HAS_VERDICT_KEY=value))[0])
 
-    def test_code_is_a_j1_code(self):  # J2 stops on its own with the same code before reading J1
+    def test_code_is_a_j1_code(self):
         self.assertIn(L.LEDGER_KEY_MISSING, jr.REJECTED_CODES)
+
+    def test_j2_with_a_key_shows_j1s_code(self):
+        # J1 was told "false" but J2 has a key (misconfigured flag): the check names the reason,
+        # not the vague J1_INCOMPLETE
+        j1v = TL.j1(TL.j1_result("rejected", code=L.LEDGER_KEY_MISSING))
+        self.assertIsNotNone(j1v.result)
+        check = T.decide_check(TL.ledger(TL.bind()), sha=TL.SHA1, j0_code=None, pr_issue=5, j1=j1v, written={})
+        self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.LEDGER_KEY_MISSING))
 
 
 class Order(unittest.TestCase):
