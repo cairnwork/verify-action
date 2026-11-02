@@ -693,3 +693,79 @@ jobs:
           test "${{ steps.test_v01_policy.outcome }}" = "failure"
           test "${{ steps.test_v01_policy.outputs.verdict }}" = "REJECTED"
           test "${{ steps.test_v01_policy.outputs.code }}" = "TEST_SOURCE_MISMATCH"
+
+      - name: Copy policy into repo path
+        run: cp "$GITHUB_WORKSPACE/fixtures/v02-demo/policy.json" v02-conf/policy-in-repo.json
+
+      - name: Policy inside repo-path
+        id: test_policy_inside_repo
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/v02-demo/public-key.pem
+          policy: ${{ github.workspace }}/v02-conf/policy-in-repo.json
+          candidate: '4a1422b33516ce6c8ae38aec59b4bf5dc86925ae'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-conf
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: Policy relative path
+        id: test_policy_relative
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/v02-demo/public-key.pem
+          # exists relative to repo-path and lies outside it: only the absolute-path rule refuses it
+          policy: ../fixtures/v02-demo/policy.json
+          candidate: '4a1422b33516ce6c8ae38aec59b4bf5dc86925ae'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-conf
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: Assert policy path checks
+        run: |
+          test "${{ steps.test_policy_inside_repo.outcome }}" = "failure"
+          test "${{ steps.test_policy_inside_repo.outputs.verdict }}" = "ERROR"
+          test "${{ steps.test_policy_inside_repo.outputs.code }}" = "BAD_INPUT"
+          test "${{ steps.test_policy_relative.outcome }}" = "failure"
+          test "${{ steps.test_policy_relative.outputs.verdict }}" = "ERROR"
+          test "${{ steps.test_policy_relative.outputs.code }}" = "BAD_INPUT"
+
+      # verify.sh run directly against a stub verifier: the stub writes stderr lines that would be
+      # workflow commands, and answers HEAD_MISMATCH for a subject equal to the candidate.
+      - name: Verifier stderr and HEAD_MISMATCH with a stub verifier
+        run: |
+          stub="$RUNNER_TEMP/stub-attest"
+          cat > "$stub" <<'STUB'
+          #!/usr/bin/env bash
+          c=:: h='##['
+          printf '%swarning::stub one\n%swarning]stub two\n   %swarning::stub three\n' "$c" "$h" "$c" >&2
+          printf '%s\n' '{"ok":false,"code":"HEAD_MISMATCH","detail":"stub"}'
+          exit 1
+          STUB
+          chmod +x "$stub"
+          out="$RUNNER_TEMP/stub-output.txt"
+          log="$RUNNER_TEMP/stub-log.txt"
+          : > "$out"
+          set +e
+          (cd v02-full && env GITHUB_OUTPUT="$out" CAIRNWORK_ATTEST_BIN="$stub" \
+            INPUT_BUNDLE_PATH="$GITHUB_WORKSPACE/fixtures/v02-demo/bundle.json" \
+            INPUT_PUBLIC_KEY="$GITHUB_WORKSPACE/fixtures/v02-demo/public-key.pem" \
+            INPUT_CANDIDATE='4a1422b33516ce6c8ae38aec59b4bf5dc86925ae' INPUT_BASE='16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d' INPUT_REQUIRE_WHEN=always \
+            bash "$GITHUB_WORKSPACE/scripts/verify.sh") > "$log" 2>&1
+          status=$?
+          set -e
+          sed 's/^/log| /' "$log"
+          test "$status" -ne 0
+          grep -qx 'verdict=REJECTED' "$out"
+          # subject equals the candidate: HEAD_MISMATCH is not renamed CANDIDATE_MISMATCH
+          grep -qx 'code=HEAD_MISMATCH' "$out"
+          # every stub stderr line arrives behind the fixed prefix
+          test "$(grep -c '^cairnwork-attest: ' "$log")" -eq 3
+          # no other line starts (after leading spaces) with :: or ##[ ; only the action's own error
+          bad=$(sed 's/^[[:space:]]*//' "$log" | grep -E '^(::|##\[)' | grep -v '^::error::HEAD_MISMATCH: ' || true)
+          test -z "$bad"
