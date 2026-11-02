@@ -11,8 +11,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -238,6 +240,92 @@ class J1Ledger(LocalLedger):
         self.assertFalse((Path(self.tmp.name) / "ledger-keys").exists())
 
 
+class OrderLedger:
+    """Records when J1 used the ledger and when it closed it (deleting the claim key)."""
+
+    def __init__(self, events, check=None, claim=(1, None)):
+        self.events, self._check, self._claim = events, check, claim
+
+    def check(self, *_args):
+        self.events.append("check")
+        return self._check
+
+    def bind_and_claim(self, *_args):
+        self.events.append("claim")
+        return self._claim
+
+    def close(self):
+        self.events.append("close")
+
+
+class J1KeyOrder(unittest.TestCase):
+    """run(): the claim key is closed before the candidate runs, and on every refusal."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.events = []
+        self.cfg = jv.Config(head=HEAD, base=BASE, issue=7, pr=5, author="a", target_repo="o/t",
+                             target_branch="main", tests_repo="o/tests", ledger_repo="o/ledger",
+                             run_id=1, run_attempt=1, private=Path(self.tmp.name), cairnwork_bin=Path("/x"),
+                             uv="/x", target_repo_id=REPO_ID, ledger_key="K")  # fmt: skip
+
+    def run_j1(self, ledger, **overrides):
+        def read_tests_tree(ws):
+            ws.version, ws.task = BASE, SimpleNamespace(test_root="tests")
+
+        def run_core(*_args):
+            self.events.append("candidate")
+
+        fakes = {
+            "fetch_target": lambda ws: None, "check_shape": lambda ws: None,
+            "read_tests_tree": read_tests_tree, "precheck_public": lambda ws: None,
+            "precheck_scope": lambda ws: None, "precheck_host": lambda: None,
+            "verifier_python": lambda ws: "/x/python",
+            "build_tests": lambda ws: (OTHER, Path("/x/bundle"), ("tests/t.py",)),
+            "make_state": lambda *a: Path("/x/state"), "import_tests": lambda *a: None,
+            "run_core": run_core, "end_verifier_processes": lambda: True, **overrides,
+        }  # fmt: skip
+        src = jv.Sources(target_url="file:///x", tests_url="file:///x", allow_file=True)
+        with mock.patch.multiple(jv, **fakes), redirect_stderr(io.StringIO()):
+            return jv.run(self.cfg, src, ledger)
+
+    def test_closed_after_the_claim_before_the_candidate(self):
+        result = self.run_j1(OrderLedger(self.events))
+        self.assertEqual(self.events, ["check", "claim", "close", "candidate"])
+        self.assertEqual(result["outcome"], "ran")
+
+    def test_closed_on_a_ledger_refusal(self):
+        result = self.run_j1(OrderLedger(self.events, check=L.PRIOR_VERDICT))
+        self.assertEqual(self.events, ["check", "close"])
+        self.assertEqual((result["outcome"], result["code"]), ("rejected", L.PRIOR_VERDICT))
+
+    def test_closed_on_a_claim_refusal(self):
+        result = self.run_j1(OrderLedger(self.events, claim=(None, L.ATTEMPT_PENDING)))
+        self.assertEqual(self.events, ["check", "claim", "close"])
+        self.assertEqual(result["code"], L.ATTEMPT_PENDING)
+
+    def test_closed_on_a_setup_error(self):
+        def broken(ws):
+            raise OSError("x")
+
+        result = self.run_j1(OrderLedger(self.events), build_tests=broken)
+        self.assertEqual(self.events, ["check", "close"])
+        self.assertEqual(result["code"], "RUNNER_SETUP_PROBLEM")
+
+    def test_closed_when_the_claim_breaks(self):
+        ledger = OrderLedger(self.events)
+
+        def claim(*_args):
+            self.events.append("claim")
+            raise OSError("x")
+
+        ledger.bind_and_claim = claim
+        with self.assertRaises(OSError):
+            self.run_j1(ledger)
+        self.assertEqual(self.events, ["check", "claim", "close"])
+
+
 class JobsApi:
     def __init__(self, answer):
         self.answer = answer
@@ -330,6 +418,30 @@ class J2Wiring(LocalLedger):
                               "head_sha": HEAD, "outcome": "rejected", "code": "TESTS_SETUP_PROBLEM"})  # fmt: skip
         code, printed = self.j2(JobsApi((404, None)), run_id=300, result=result)
         self.assertEqual(printed, {"conclusion": T.FAILURE, "code": "TESTS_SETUP_PROBLEM"})
+
+    def ledger_tokens(self, extra):
+        seen, real = [], IO.GitLedger
+
+        def recording(url, repo_id, **kw):
+            seen.append(kw.get("token"))
+            return real(url, repo_id, **kw)
+
+        environ = {
+            "ACCEPT_TARGET_REPO": "org/target", "ACCEPT_TARGET_REPO_ID": str(REPO_ID),
+            "ACCEPT_SHA": HEAD, "ACCEPT_RUN_ID": "200", "ACCEPT_J0_CODE": "NO_TASK",
+            "ACCEPT_PR_ISSUE": "", "ACCEPT_J1_JOB_RESULT": "skipped", "ACCEPT_J1_RESULT": "",
+            "ACCEPT_J1_JOB_NAME": "verify", "ACCEPT_LEDGER_URL": "https://github.com/org/ledger.git",
+            "ACCEPT_CHECK_NAME": "cairnwork-accept", "ACCEPT_NOTE_CHECK_NAME": "cairnwork-accept-note",
+            "ACCEPT_APP_TOKEN": "target-app-token", **extra,
+        }  # fmt: skip
+        with mock.patch.object(R.IO, "GitLedger", recording), redirect_stdout(io.StringIO()):
+            self.assertEqual(R.main(environ, api=JobsApi((404, None)), ledger_url=self.remote), 0)
+        return seen
+
+    def test_ledger_is_reached_with_the_ledger_token(self):
+        # the ledger App token has contents write on the ledger only; the target token is not used there
+        self.assertEqual(self.ledger_tokens({"ACCEPT_LEDGER_TOKEN": "ledger-app-token"}), ["ledger-app-token"])
+        self.assertEqual(self.ledger_tokens({}), ["target-app-token"])  # one App for both: same token
 
     def test_app_token_is_required(self):
         environ = {"ACCEPT_APP_TOKEN": ""}

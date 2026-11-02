@@ -54,7 +54,7 @@ LOCKED_PYPROJECT = (
     '[project]\nname = "fixture"\nversion = "0"\nrequires-python = ">=3.12"\n'
     'dependencies = ["pytest==9.1.1"]\n'
 )
-MIN_CHECKS = 128  # checks before this one; the run fails below it (no silent pass); log-scan reads it
+MIN_CHECKS = 168  # checks before this one; the run fails below it (no silent pass); log-scan reads it
 
 
 def canary_of(seed: str) -> str:
@@ -297,7 +297,29 @@ def driver(case_dir: Path) -> int:
     if spec.get("ledger_url"):  # the production ledger code (ledger_io) on a local ledger repo
         ids = {"pr": int(os.environ["CW_PR"]), "run_id": int(os.environ["CW_RUN_ID"]),
                "j1_attempt": int(os.environ["CW_RUN_ATTEMPT"])}  # fmt: skip
-        ledger = j1_verify.GitLedger(spec["ledger_url"], TARGET_REPO_ID, 1, ids)
+        keys = Path(os.environ["CW_PRIVATE"]) / "ledger-keys"
+        real = j1_verify.GitLedger(spec["ledger_url"], TARGET_REPO_ID, 1, ids, key_dir=keys,
+                                   key="e2e-ledger-key-placeholder")  # fmt: skip
+        ledger = real
+        trace: dict[str, bool] = {}  # where the claim key file was at each step (outside private/)
+
+        def note(step: str) -> None:
+            trace[step] = (keys / "ledger").exists()
+            (case_dir / "key-trace.json").write_text(json.dumps(trace))
+
+        check, run_core = real.check, j1_verify.run_core
+
+        def traced_check(*args: object) -> object:
+            found = check(*args)  # type: ignore[arg-type]
+            note("after_check")
+            return found
+
+        def traced_run_core(*args: object) -> object:
+            note("candidate")
+            return run_core(*args)  # type: ignore[arg-type]
+
+        real.check = traced_check  # type: ignore[method-assign]
+        j1_verify.run_core = traced_run_core  # type: ignore[assignment]
     return j1_verify.main(ledger=ledger, sources=sources, injected=True)  # type: ignore[arg-type]
 
 
@@ -405,6 +427,14 @@ def leak_checks(c: Checks, case: str, out: Outcome, canary: str, ran: bool) -> N
         c.that(case, "baseline: test name in private files", f"test_{canary}".encode() in private_bytes(out.private))
 
 
+def key_trace(case: Path) -> dict:
+    try:
+        found = json.loads((case / "key-trace.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
 def wired(c: Checks, fx: Fixture, base: Path, canary: str) -> None:
     """J0 -> J1 -> J2 as accept.yml chains them: J0 decides from the (fixture) API, J1 runs with
     J0's outputs and the production ledger code on a local ledger repository, J2 reads that
@@ -465,6 +495,9 @@ def wired(c: Checks, fx: Fixture, base: Path, canary: str) -> None:
     claims = [k for k, v in ledger.claims.items() if v.head_sha == gate["head-sha"]]
     c.that("wired-good", "claim=1 in the ledger", [n for _v, n in claims] == [1]
            and gate["head-sha"] in ledger.binds)  # fmt: skip
+    trace = key_trace(base / "wired-good")
+    c.that("wired-good", "claim key there for the ledger check", trace.get("after_check") is True)
+    c.that("wired-good", "claim key gone before the candidate ran", trace.get("candidate") is False)
     c.that("wired-good", "claim key gone", not (out.private / "ledger-keys").exists())
     leak_checks(c, "wired-good", out, canary, ran=True)
     check = j2(gate, 5001, out) or {}
@@ -480,6 +513,9 @@ def wired(c: Checks, fx: Fixture, base: Path, canary: str) -> None:
     c.that("wired-rerun", "still one claim", len([1 for v in read().claims.values()
                                                    if v.head_sha == gate["head-sha"]]) == 1)  # fmt: skip
     c.that("wired-rerun", "core never ran", not (out.private / "core.json").exists())
+    trace = key_trace(base / "wired-rerun")
+    c.that("wired-rerun", "claim key there for the ledger check", trace == {"after_check": True})
+    c.that("wired-rerun", "claim key gone after the refusal", not (out.private / "ledger-keys").exists())
     check = j2(gate, 5002, out) or {}
     c.that("wired-rerun", "J2 success from the prior verdict", check.get("conclusion") == "success")
 
