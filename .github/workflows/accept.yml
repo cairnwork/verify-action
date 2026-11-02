@@ -1,0 +1,134 @@
+name: Cairnwork accept
+
+# Reusable PR acceptance workflow (design v2.2): J0 gate -> J1 verify -> J2 report. A caller on the
+# target repository's default branch runs it on pull_request_target and pins it by commit.
+#
+# Status: J1 only (step S2b). The gate below is a placeholder that lets nothing through until S2a
+# adds J0, and J1 refuses to run any candidate until S3 adds the ledger (LEDGER_NOT_CONFIGURED).
+# So no commit of this file runs a candidate without a ledger.
+
+on:
+  workflow_call:
+    inputs:
+      tests-repo:
+        description: "Private tests repository (owner/name); tasks/<N>/task.json and tasks/<N>/tests/"
+        type: string
+        required: true
+      ledger-repo:
+        description: "Private ledger repository (owner/name); S3"
+        type: string
+        required: false
+        default: ''
+      verify-action-sha:
+        description: "The 40-hex commit of cairnwork/verify-action the caller pins in uses:"
+        type: string
+        required: true
+    secrets:
+      TESTS_KEY:
+        description: "Read-only deploy key of the tests repository"
+        required: true
+      LEDGER_KEY:
+        description: "Claim deploy key of the ledger repository (S3)"
+        required: false
+    outputs:
+      j1-result:
+        description: "J1's one-line whitelisted result (schema cairnwork-accept-j1/1)"
+        value: ${{ jobs.verify.outputs.result }}
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    # Placeholder for J0 (S2a): no environment, no secret, read-only token, and it lets nothing
+    # through. S2a replaces this job and its outputs (head-sha, base-sha, issue, pr, author,
+    # target-branch).
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      head-sha: ''
+      base-sha: ''
+      issue: ''
+      pr: ''
+      author: ''
+      target-branch: ''
+    steps:
+      - name: Not yet implemented (S2a)
+        id: gate
+        run: echo "run=false" >> "$GITHUB_OUTPUT"
+
+  verify:
+    # J1. Every value from J0 reaches the scripts through env and is format-checked there; nothing
+    # is expanded into a run: line. From the first contact with the tests repository on, all
+    # output goes to owner-only files under CW_PRIVATE; the only public output is the checked
+    # result line of the last step.
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    environment: cairnwork-verify
+    permissions:
+      contents: read
+    outputs:
+      result: ${{ steps.result.outputs.result }}
+    env:
+      # Cairnwork main, pinned: its bwrap policy, verifier account and verify engine.
+      CW_CAIRNWORK_REF: 36b569240b896878c23153927c27781755af9e3c
+    steps:
+      - name: Runner self-check; the verify-action commit is a 40-hex id
+        env:
+          CW_VERIFY_ACTION_SHA: ${{ inputs.verify-action-sha }}
+        run: |
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          # a branch or tag name would run moving scripts: refuse anything but a commit id
+          printf '%s' "$CW_VERIFY_ACTION_SHA" | grep -q -x -E '[0-9a-f]{40}'
+
+      - name: Checkout verify-action scripts
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: cairnwork/verify-action
+          ref: ${{ inputs.verify-action-sha }}
+          path: .cw-accept
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6 (commit)
+        with:
+          enable-cache: false
+
+      - name: Host setup (output to the private log)
+        env:
+          CW_PRIVATE: ${{ runner.temp }}/cw-j1
+        run: sh .cw-accept/scripts/accept/j1_host.sh
+
+      - name: Verify (output to the private log)
+        env:
+          CW_PRIVATE: ${{ runner.temp }}/cw-j1
+          CW_HEAD_SHA: ${{ needs.gate.outputs.head-sha }}
+          CW_BASE_SHA: ${{ needs.gate.outputs.base-sha }}
+          CW_ISSUE: ${{ needs.gate.outputs.issue }}
+          CW_PR: ${{ needs.gate.outputs.pr }}
+          CW_AUTHOR: ${{ needs.gate.outputs.author }}
+          CW_TARGET_BRANCH: ${{ needs.gate.outputs.target-branch }}
+          CW_TARGET_REPO: ${{ github.repository }}
+          CW_TESTS_REPO: ${{ inputs.tests-repo }}
+          CW_LEDGER_REPO: ${{ inputs.ledger-repo }}
+          CW_RUN_ID: ${{ github.run_id }}
+          CW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          CW_TESTS_KEY: ${{ secrets.TESTS_KEY }}
+          CW_TARGET_TOKEN: ${{ github.token }}
+        run: |
+          umask 077
+          CW_UV="$(command -v uv)" CW_CAIRNWORK_BIN="$CW_PRIVATE/cw-src/.venv/bin" \
+            "$CW_PRIVATE/cw-src/.venv/bin/python" -I .cw-accept/scripts/accept/j1_verify.py \
+            >>"$CW_PRIVATE/j1.log" 2>&1
+
+      - name: Result
+        id: result
+        if: always()
+        env:
+          CW_PRIVATE: ${{ runner.temp }}/cw-j1
+        run: /usr/bin/python3 -I .cw-accept/scripts/accept/j1_emit.py "$CW_PRIVATE"
