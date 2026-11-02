@@ -65,8 +65,8 @@ def _tables() -> tuple[frozenset[str], frozenset[str]]:
 
 RUN_CODES, PROTECTIONS = _tables()
 KNOWN_CODES = frozenset(
-    (*J0_CODES, *J1_REJECT_CODES, J1_INCOMPLETE, L.LEDGER_CONFLICT, L.ATTEMPT_LOST, "VERIFIED",
-     L.LEDGER_UNAVAILABLE)
+    (*J0_CODES, *J1_REJECT_CODES, J1_INCOMPLETE, L.LEDGER_CONFLICT, L.LEDGER_VERDICT_UNSIGNED, L.ATTEMPT_LOST,
+     "VERIFIED", L.LEDGER_UNAVAILABLE)
 ) | RUN_CODES
 
 
@@ -198,6 +198,8 @@ def decide_check(
         "version": bind.tests_version if bind is not None else None,
         "note_bound_issue": note,
     }
+    if any(ledger.claims[k].head_sha == sha for k in ledger.unsigned if k in ledger.claims):
+        return Check(FAILURE, L.LEDGER_VERDICT_UNSIGNED, **title)  # an unhonoured verdict tag
     if L.pending_claims(ledger, sha):  # row 7 (and an own write that did not land)
         if any(o == L.LEDGER_CONFLICT for o in written.values()):
             return Check(FAILURE, L.LEDGER_CONFLICT, **title)

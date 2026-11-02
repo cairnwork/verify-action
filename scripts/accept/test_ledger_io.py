@@ -344,6 +344,65 @@ class Scenario(unittest.TestCase):
         self.assertEqual(self.j1(), (None, L.LEDGER_UNAVAILABLE))
 
 
+class SignedVerdicts(Scenario):
+    """The verdict key signs verdict commits; a signing reader honours only those."""
+
+    def keygen(self, name):
+        path = os.path.join(self.tmp.name, name)
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", path], check=True,
+                       capture_output=True)  # fmt: skip
+        return path
+
+    def signer(self, key, url=None):
+        hosts = os.path.join(self.tmp.name, "known_hosts")
+        open(hosts, "a").close()
+        io = IO.GitLedger(url or self.remote, TARGET, ssh_key=key, known_hosts=hosts, sign=True)
+        self.ios.append(io)
+        return io
+
+    def verdict_msg(self, nonce="c" * 32):
+        return L.encode("verdict", {"target_repo_id": TARGET, "nonce": nonce, "tests_version": VER,
+                                    "n": 1, "run_id": 100, "head_sha": SHA1, "status": "VERIFIED",
+                                    "code": "CORE_VERIFIED", "protection": "same_process_only"})  # fmt: skip
+
+    def claimed(self):
+        self.assertEqual(self.j1(), (1, None))  # (d) claims need no signature
+
+    def test_signed_verdict_is_honoured(self):
+        key = self.keygen("k1")
+        self.claimed()
+        io = self.signer(key)
+        self.assertEqual(self.j2(io=io, result=self.ran()).conclusion, T.SUCCESS)
+        self.assertEqual(io.read().verdicts[(VER, 1)].status, "VERIFIED")
+        self.assertEqual(io.read().unsigned, frozenset())
+
+    def test_unsigned_verdict_is_ignored(self):
+        key = self.keygen("k1")
+        self.claimed()
+        self.assertTrue(self.io().create(f"refs/tags/verdict/{VER}/1", self.verdict_msg()))
+        io = self.signer(key)
+        led = io.read()
+        self.assertEqual((dict(led.verdicts), led.unsigned), ({}, frozenset({(VER, 1)})))
+        check = self.j2(io=io, result=self.ran())
+        self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.LEDGER_VERDICT_UNSIGNED))
+        self.assertEqual(L.after_verdict_failure(led, VER, 1, "d" * 32, {}), L.LEDGER_VERDICT_UNSIGNED)
+        self.assertEqual(self.io().read().verdicts[(VER, 1)].status, "VERIFIED")  # plain reader
+
+    def test_other_key_verdict_is_ignored(self):
+        self.claimed()
+        self.assertTrue(self.signer(self.keygen("other")).create(f"refs/tags/verdict/{VER}/1",
+                                                                self.verdict_msg()))  # fmt: skip
+        led = self.signer(self.keygen("k1")).read()
+        self.assertEqual((dict(led.verdicts), led.unsigned), ({}, frozenset({(VER, 1)})))
+
+    def test_signing_needs_key_and_claims_stay_unsigned(self):
+        with self.assertRaises(ValueError):
+            IO.GitLedger(self.remote, TARGET, sign=True)
+        io = self.signer(self.keygen("k1"))
+        self.assertEqual(self.j1(io=io), (1, None))  # claim path through a signing handle
+        self.assertEqual(io._git("log", "--format=%G?", "-1", f"refs/l/claim/{VER}/1").strip(), "N")
+
+
 class Cli(unittest.TestCase):
     def run_cli(self, *args, env=None):
         here = os.path.dirname(os.path.abspath(__file__))

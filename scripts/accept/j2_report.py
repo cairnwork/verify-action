@@ -21,6 +21,11 @@ outputs through ``env:``, never into ``run:``); each is checked for shape before
     ACCEPT_LEDGER_KEY        verdict deploy key of the ledger repository (private key text);
                              written to owner-only files for the git calls and deleted after
                              use, never printed and never in argv. It wins over the tokens.
+                             With the key, J2 signs every verdict commit with it and honours
+                             only verdicts whose signature verifies against its public half
+                             (an unhonoured one: LEDGER_VERDICT_UNSIGNED). The token path
+                             cannot sign, so verdicts it writes are not honoured by a
+                             signature-checking reader; production uses the key.
     ACCEPT_LEDGER_TOKEN      optional (tests, compatibility): App installation token for the
                              ledger repository; empty: ACCEPT_APP_TOKEN is used for both
 
@@ -214,7 +219,7 @@ def open_ledger(url: str, repo_id: int, key: str, token: str) -> tuple[IO.GitLed
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, "w") as handle:
                 handle.write(text)
-        return IO.GitLedger(url, repo_id, ssh_key=ssh_key, known_hosts=known_hosts), key_dir
+        return IO.GitLedger(url, repo_id, ssh_key=ssh_key, known_hosts=known_hosts, sign=True), key_dir
     except BaseException:
         shutil.rmtree(key_dir, ignore_errors=True)
         raise
