@@ -29,6 +29,7 @@ CLAIM_SLACK = 3  # numbering cap = max_attempts + CLAIM_SLACK: skipped numbers u
 
 # --- codes (fixed values; they reach the check title) -----------------------------------------
 LEDGER_NOT_CONFIGURED = "LEDGER_NOT_CONFIGURED"
+LEDGER_KEY_MISSING = "LEDGER_KEY_MISSING"  # J2: a ledger is configured but the verdict key is not
 LEDGER_UNAVAILABLE = "LEDGER_UNAVAILABLE"
 LEDGER_CONFLICT = "LEDGER_CONFLICT"
 LEDGER_VERDICT_UNSIGNED = "LEDGER_VERDICT_UNSIGNED"  # a verdict tag not signed by the verdict key
@@ -104,6 +105,9 @@ class Ledger:
     # (tests version, n) of verdict tags a signature-checking reader did not honour: they are
     # not in ``verdicts``, so the attempt reads as unjudged, and the reader reports the code.
     unsigned: frozenset[tuple[str, int]] = frozenset()
+    # (ref name, short reason) of every ref the parse could not classify: skipped and counted,
+    # never fatal. Config and target-repository mismatches still make the whole read fail.
+    skipped: tuple[tuple[str, str], ...] = ()
 
 
 # --- strict reading --------------------------------------------------------------------------
@@ -177,39 +181,57 @@ def parse_config(text: str | None) -> int:
     return obj["target_repo_id"]
 
 
+def _reason(name: str, objtype: str) -> str:
+    if _REF.match(name) is None:
+        return "ref_name"
+    return "not_commit" if objtype != "commit" else "record"
+
+
+def _add_record(name: str, objtype: str, message: str, target_repo_id: int, binds: dict[str, Entry],
+                claims: dict[tuple[str, int], Entry], verdicts: dict[tuple[str, int], Entry]) -> None:
+    """Classify one ref into binds/claims/verdicts; raises LedgerUnreadable when it cannot be."""
+    match = _REF.match(name)
+    if match is None or objtype != "commit" or not message.endswith("\n"):
+        raise LedgerUnreadable
+    obj = strict_json(message[:-1])
+    kind = match.group(1) or match.group(3)
+    _typed(obj, {**_COMMON, **_FIELDS[kind]})
+    _check_values(kind, obj)
+    if obj["target_repo_id"] != target_repo_id:
+        raise LedgerUnreadable
+    entry = Entry(kind, obj)
+    if kind == "bind":
+        if obj["head_sha"] != match.group(2):
+            raise LedgerUnreadable
+        binds[match.group(2)] = entry
+        return
+    key = (match.group(4), int(match.group(5)))
+    if (obj["tests_version"], obj["n"]) != key:
+        raise LedgerUnreadable
+    (claims if kind == "claim" else verdicts)[key] = entry
+
+
 def parse_ledger(config_text: str | None, refs: list[tuple[str, str, str]], target_repo_id: int) -> Ledger:
     """``refs``: (ref name, object type, commit message) for every ref under bind/, claim/ and
-    verdict/. Raises LedgerUnreadable on anything unexpected, including a target mismatch."""
+    verdict/. Raises LedgerUnreadable on a bad config or a target mismatch of the config; a ref or
+    record that cannot be classified is skipped and listed in ``Ledger.skipped``."""
     if parse_config(config_text) != target_repo_id:
         raise LedgerUnreadable
     binds: dict[str, Entry] = {}
     claims: dict[tuple[str, int], Entry] = {}
     verdicts: dict[tuple[str, int], Entry] = {}
+    skipped: list[tuple[str, str]] = []
     for name, objtype, message in refs:
-        match = _REF.match(name)
-        if match is None or objtype != "commit" or not message.endswith("\n"):
-            raise LedgerUnreadable
-        obj = strict_json(message[:-1])
-        kind = match.group(1) or match.group(3)
-        _typed(obj, {**_COMMON, **_FIELDS[kind]})
-        _check_values(kind, obj)
-        if obj["target_repo_id"] != target_repo_id:
-            raise LedgerUnreadable
-        entry = Entry(kind, obj)
-        if kind == "bind":
-            if obj["head_sha"] != match.group(2):
-                raise LedgerUnreadable
-            binds[match.group(2)] = entry
-            continue
-        key = (match.group(4), int(match.group(5)))
-        if (obj["tests_version"], obj["n"]) != key:
-            raise LedgerUnreadable
-        (claims if kind == "claim" else verdicts)[key] = entry
-    for key, verdict in verdicts.items():
+        try:
+            _add_record(name, objtype, message, target_repo_id, binds, claims, verdicts)
+        except (LedgerUnreadable, KeyError, ValueError, TypeError):
+            skipped.append((name[:120], _reason(name, objtype)))
+    for key, verdict in list(verdicts.items()):
         claim = claims.get(key)
-        if claim is None or claim.head_sha != verdict.head_sha:
-            raise LedgerUnreadable  # a verdict judges exactly one claim of the same sha
-    return Ledger(target_repo_id, binds, claims, verdicts)
+        if claim is None or claim.head_sha != verdict.head_sha:  # a verdict judges exactly one claim of the same sha
+            del verdicts[key]
+            skipped.append((f"refs/tags/verdict/{key[0]}/{key[1]}", "no_claim"))
+    return Ledger(target_repo_id, binds, claims, verdicts, skipped=tuple(skipped))
 
 
 # --- counting and sha state ------------------------------------------------------------------

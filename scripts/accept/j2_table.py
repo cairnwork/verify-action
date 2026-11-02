@@ -66,7 +66,7 @@ def _tables() -> tuple[frozenset[str], frozenset[str]]:
 RUN_CODES, PROTECTIONS = _tables()
 KNOWN_CODES = frozenset(
     (*J0_CODES, *J1_REJECT_CODES, J1_INCOMPLETE, L.LEDGER_CONFLICT, L.LEDGER_VERDICT_UNSIGNED, L.ATTEMPT_LOST,
-     "VERIFIED", L.LEDGER_UNAVAILABLE)
+     "VERIFIED", L.LEDGER_UNAVAILABLE, L.LEDGER_KEY_MISSING)
 ) | RUN_CODES
 
 
@@ -168,6 +168,7 @@ class Check:
     version: str | None = None
     protection: str = "none"
     note_bound_issue: int | None = None  # set: create the separate, non-required note check
+    skipped: int = 0  # ledger refs skipped as unclassifiable (non-fatal), for the summary line
 
     def __post_init__(self) -> None:
         if self.conclusion is not None and self.conclusion not in CONCLUSIONS:
@@ -197,6 +198,7 @@ def decide_check(
         "issue": bind.issue if bind is not None else pr_issue,
         "version": bind.tests_version if bind is not None else None,
         "note_bound_issue": note,
+        "skipped": len(ledger.skipped),
     }
     if any(ledger.claims[k].head_sha == sha for k in ledger.unsigned if k in ledger.claims):
         return Check(FAILURE, L.LEDGER_VERDICT_UNSIGNED, **title)  # an unhonoured verdict tag

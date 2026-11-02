@@ -21,13 +21,12 @@ outputs through ``env:``, never into ``run:``); each is checked for shape before
     ACCEPT_LEDGER_KEY        verdict deploy key of the ledger repository (private key text);
                              written to owner-only files for the git calls and deleted after
                              use, never printed and never in argv. It wins over the tokens.
-                             With the key, J2 signs every verdict commit with it and honours
-                             only verdicts whose signature verifies against its public half
-                             (an unhonoured one: LEDGER_VERDICT_UNSIGNED). The token path
-                             cannot sign, so verdicts it writes are not honoured by a
-                             signature-checking reader; production uses the key.
-    ACCEPT_LEDGER_TOKEN      optional (tests, compatibility): App installation token for the
-                             ledger repository; empty: ACCEPT_APP_TOKEN is used for both
+                             J2 signs every verdict commit with it and honours only verdicts
+                             whose signature verifies against its public half (an unhonoured
+                             one: LEDGER_VERDICT_UNSIGNED). A configured ledger URL without
+                             this key is refused: LEDGER_KEY_MISSING, a failed required check,
+                             never a success. The App token is for the target repository's
+                             check-run API only, never for reading or writing the ledger.
 
 Prints one line of JSON with fixed values (conclusion, code). Exit 0 when the decision was carried
 out (including "no check"), 1 otherwise; it never creates a success it did not decide on.
@@ -145,6 +144,8 @@ def create_checks(api: Api, env: dict[str, Any], check: T.Check) -> bool:
         summary = ("Passed the acceptance check. Human review is still required."
                    if check.conclusion == T.SUCCESS else
                    "Did not pass the acceptance check. Details stay on the runner.")  # fmt: skip
+        if check.skipped:
+            summary += f" Ledger records skipped: {check.skipped}."
         body = {"name": env["check_name"], "head_sha": env["sha"], "status": "completed",
                 "conclusion": check.conclusion,
                 "output": {"title": title(check), "summary": summary}}  # fmt: skip
@@ -177,13 +178,13 @@ def read_env(environ: dict[str, str]) -> dict[str, Any] | None:
         "j1_text": get("ACCEPT_J1_RESULT"), "j1_job_name": get("ACCEPT_J1_JOB_NAME"),
         "ledger_url": get("ACCEPT_LEDGER_URL"), "check_name": get("ACCEPT_CHECK_NAME"),
         "note_check_name": get("ACCEPT_NOTE_CHECK_NAME"), "token": get("ACCEPT_APP_TOKEN"),
-        "ledger_token": get("ACCEPT_LEDGER_TOKEN") or get("ACCEPT_APP_TOKEN"),
         "ledger_key": get("ACCEPT_LEDGER_KEY"),
     }  # fmt: skip
 
 
-def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None) -> T.Check:
-    """The whole J2 decision with I/O injected; ``io`` None means no ledger is configured."""
+def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None, no_ledger: str = L.LEDGER_NOT_CONFIGURED) -> T.Check:
+    """The whole J2 decision with I/O injected; ``io`` None means no ledger is used: ``no_ledger``
+    (LEDGER_NOT_CONFIGURED, or LEDGER_KEY_MISSING when a ledger is configured without the key)."""
     result = T.parse_j1(env["j1_text"], run_id=env["run_id"], sha=env["sha"])
     attempt = result["j1_attempt"] if result is not None else None
     if attempt is None and env["j0_code"] is None:
@@ -193,7 +194,7 @@ def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None) -> T.Check:
     if env["j0_code"] in T.NO_CHECK_J0:
         return T.decide_check(None, written={}, **common)
     if io is None:
-        return T.decide_check(None, ledger_error=L.LEDGER_NOT_CONFIGURED, written={}, **common)
+        return T.decide_check(None, ledger_error=no_ledger, written={}, **common)
     ledger = io.read()
     written: dict[tuple[str, int], str] = {}
     if ledger is not None:
@@ -208,10 +209,8 @@ def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None) -> T.Check:
     return T.decide_check(ledger, written=written, **common)
 
 
-def open_ledger(url: str, repo_id: int, key: str, token: str) -> tuple[IO.GitLedger, str | None]:
-    """The ledger handle and the private key dir (None on the token path). A key wins."""
-    if not key:
-        return IO.GitLedger(url, repo_id, token=token), None
+def open_ledger(url: str, repo_id: int, key: str) -> tuple[IO.GitLedger, str]:
+    """The ledger handle (SSH, signing) and the private key dir. There is no token path."""
     key_dir = tempfile.mkdtemp(prefix="j2-key-")  # 0700
     try:
         ssh_key, known_hosts = os.path.join(key_dir, "ledger"), os.path.join(key_dir, "known_hosts")
@@ -233,9 +232,11 @@ def main(environ: dict[str, str], api: Any = None, ledger_url: str | None = None
         return 1
     api = api or Api(env["repo"], env["token"])
     url = ledger_url or env["ledger_url"]
-    io, key_dir = open_ledger(url, env["repo_id"], env["ledger_key"], env["ledger_token"]) if url else (None, None)
+    no_ledger = L.LEDGER_NOT_CONFIGURED if not url else L.LEDGER_KEY_MISSING  # url without key: refuse
+    use = bool(url and env["ledger_key"])
+    io, key_dir = open_ledger(url, env["repo_id"], env["ledger_key"]) if use else (None, None)
     try:
-        check = run(env, api, io)
+        check = run(env, api, io, no_ledger)
     finally:
         if io is not None:
             io.close()
