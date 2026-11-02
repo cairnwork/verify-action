@@ -28,12 +28,13 @@ from pathlib import Path
 from cairnwork.verifier_account import VerifierAccount
 from cairnwork_sandbox import bwrap
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # judge.py, next to this file
+from judge import allowlist, judge  # noqa: E402
+
 ACCOUNT = VerifierAccount()
 STAGE = ACCOUNT.root / "witness"
 PYTHON = "/usr/bin/python3"
 PERSIST_NAME = "cw-witness-persist"
-PERSIST_KEYS = ("processes", "cairnwork_count", "marked_processes", "crontab", "owned_files",
-                "at_jobs", "linger")
 INNER_ENV = {"PATH": "/usr/bin:/bin", "HOME": "/nonexistent", "LANG": "C.UTF-8"}
 
 
@@ -150,179 +151,6 @@ def sudo_facts() -> dict:
     }
 
 
-def allowlist(path: str) -> list:
-    entries = []
-    for line in Path(path).read_text().splitlines():
-        line = line.split("#", 1)[0].strip()
-        if line:
-            entries.append(line.rstrip("/") or "/")
-    return entries
-
-
-def allowed(cat: str, entries: list) -> bool:
-    return any(cat == entry or cat.startswith(entry + "/") for entry in entries)
-
-
-class Verdicts:
-    def __init__(self) -> None:
-        self.lines: list = []
-        self.failed = False
-
-    def add(self, item: str, ok: bool, baseline: bool | None, detail: str) -> None:
-        base = "n/a" if baseline is None else ("valid" if baseline else "INVALID")
-        passed = ok and baseline is not False
-        self.failed |= not passed
-        self.lines.append(f"{'PASS' if passed else 'FAIL'} {item} baseline={base} {detail}")
-
-    def info(self, text: str) -> None:
-        self.lines.append(f"INFO {text}")
-
-
-def hits(report: dict) -> dict:
-    found: dict = {}
-    for tag, cats in report.get("walk", {}).get("hits", {}).items():
-        found.setdefault(tag, set()).update(cats)
-    for tag, leaves in report.get("proc", {}).get("hits", {}).items():
-        found.setdefault(tag, set()).update(f"/proc/*/{leaf}" for leaf in leaves)
-    return found
-
-
-def judge(plant: dict, runner: dict, sandbox: dict, account: dict, post_sandbox: dict,
-          pre: dict, post_account: dict, cron_base, sudo: dict, lists: dict) -> Verdicts:
-    v = Verdicts()
-    for label, report in (("runner", runner), ("sandbox", sandbox), ("account", account)):
-        if "error" in report:
-            v.add(f"probe-{label}", False, None, f"error={report['error']} "
-                  f"{report.get('stderr_tail', '')}")
-    if v.failed:
-        return v
-    uid = account_uid()
-    ident = sandbox["identity"]
-    confined = (ident["uid"] == uid and ident["status"].get("CapEff") == "0000000000000000"
-                and ident["status"].get("NoNewPrivs") == "1" and ident["ifaces"] == ["lo"]
-                and sandbox["proc"]["visible_pids"] <= 4)
-    base_ident = runner["identity"]["ifaces"] != ["lo"] and runner["proc"]["visible_pids"] > 4
-    v.add("0-confinement", confined, base_ident,
-          f"uid_is_account={ident['uid'] == uid} capeff={ident['status'].get('CapEff')} "
-          f"nnp={ident['status'].get('NoNewPrivs')} ifaces={','.join(ident['ifaces'])} "
-          f"visible_pids={sandbox['proc']['visible_pids']} "
-          f"(runner: visible_pids={runner['proc']['visible_pids']})")
-
-    # 1. canaries
-    expected = set(plant["planted"])
-    seen_base = hits(runner)
-    seen_in = hits(sandbox)
-    missing = sorted(expected - set(seen_base))
-    direct_base = runner["direct"]
-    # A file-command file the runner already removed is absent for everyone; any other failure
-    # to open as the runner means the baseline cannot see that location.
-    base_unreadable = {k: x for k, x in direct_base.items() if x not in ("ok", "ENOENT")}
-    direct_in = sorted(k for k, x in sandbox["direct"].items() if x == "ok")
-    base_ok = not missing and not base_unreadable
-    v.add("1-canary", not seen_in and not direct_in, base_ok,
-          f"planted={','.join(sorted(expected))} "
-          f"baseline_missing={','.join(missing) or '-'} "
-          f"baseline_unreadable={_kv(base_unreadable)} "
-          f"sandbox_found={_fmt(seen_in)} sandbox_direct_ok={','.join(direct_in) or '-'}")
-    for tag in sorted(set(seen_base)):
-        v.info(f"1-canary baseline {tag} at {','.join(sorted(seen_base[tag]))}")
-    v.info(f"1-canary direct opens: runner={_kv(direct_base)} sandbox={_kv(sandbox['direct'])}")
-    v.info(f"1-canary account-without-sandbox found={_fmt(hits(account))} "
-           f"direct={_kv(account['direct'])}")
-    if plant["not_planted"]:
-        v.info(f"1-canary not planted (location absent or not writable): "
-               f"{','.join(plant['not_planted'])}")
-
-    # 2. readable files and connectable sockets
-    walk_in, walk_base = sandbox["walk"], runner["walk"]
-    forbidden_in = {k: n for k, n in {**walk_in["readable_forbidden"],
-                                      **{f"{k}(dirs)": n for k, n in
-                                         walk_in["listable_forbidden"].items()}}.items() if n}
-    new_cats = {c: n for c, n in walk_in["readable"].items() if not allowed(c, lists["files"])}
-    sockets_in = {c: s["connectable"] for c, s in walk_in["sockets"].items() if s["connectable"]}
-    new_socks = {c: n for c, n in sockets_in.items() if not allowed(c, lists["sockets"])}
-    base_socks = {c: s["connectable"] for c, s in walk_base["sockets"].items() if s["connectable"]}
-    base_ok = (walk_base["readable_forbidden"].get("home", 0) > 0
-               and walk_base["readable_forbidden"].get("runner_temp", 0) > 0
-               and any("docker.sock" in c for c in base_socks) and not walk_base["truncated"])
-    v.add("2-readable", not forbidden_in and not new_cats and not walk_in["truncated"], base_ok,
-          f"sandbox_forbidden={_kv(forbidden_in)} new_categories={_kv(new_cats)} "
-          f"truncated={walk_in['truncated']} (runner_forbidden="
-          f"{_kv(walk_base['readable_forbidden'])})")
-    v.add("2-sockets", not new_socks, base_ok,
-          f"sandbox_connectable={_kv(sockets_in)} new={_kv(new_socks)} "
-          f"runner_connectable={_kv(base_socks)}")
-    v.info(f"2-readable sandbox categories={_kv(walk_in['readable'])} "
-           f"large_unscanned={walk_in['large_unscanned']} "
-           f"old_unscanned={walk_in['old_unscanned']} seconds={walk_in['seconds']} "
-           f"(runner seconds={walk_base['seconds']}) "
-           f"unlistable_dirs={walk_in['unlistable_dirs']}")
-    v.info("2-sockets runner present=" + _kv({c: s["present"]
-                                              for c, s in walk_base["sockets"].items()}))
-    v.info("2-sockets sandbox present=" + _kv({c: s["present"]
-                                               for c, s in walk_in["sockets"].items()}))
-    acc_walk = account["walk"]
-    acc_socks = {c: s["connectable"] for c, s in acc_walk["sockets"].items() if s["connectable"]}
-    v.info(f"2-readable account-without-sandbox forbidden={_kv(acc_walk['readable_forbidden'])}"
-           f" connectable={_kv(acc_socks)}")
-
-    # 3. network
-    net_in, net_base = sandbox["network"], runner["network"]
-    base_ok = net_base["dns"] == "ok" and any(
-        k.startswith("tcp:") and r == "ok" for k, r in net_base.items())
-    v.add("3-network", all(r != "ok" for r in net_in.values()), base_ok,
-          f"sandbox={_kv(net_in)} runner={_kv(net_base)}")
-
-    # 4. persistence
-    clean = (post_sandbox["processes"] == 0 and post_sandbox["marked_processes"] == 0
-             and post_sandbox["cairnwork_count"] == 0
-             and not post_sandbox["crontab"] and post_sandbox["owned_files"] == pre["owned_files"]
-             and post_sandbox["at_jobs"] == pre["at_jobs"] and not post_sandbox["linger"])
-    base_ok = (post_account["processes"] > 0 and post_account["cairnwork_count"] > 0
-               and post_account["owned_files"] > pre["owned_files"]
-               and cron_base is not False)
-    v.add("4-persistence", clean, base_ok,
-          f"after_sandbox={_kv({k: post_sandbox[k] for k in PERSIST_KEYS})} "
-          f"before={pre['owned_files']} files; after_account_without_sandbox="
-          f"{_kv({k: post_account[k] for k in ('processes', 'owned_files')})} "
-          f"cron_detector={cron_base} at_installed={pre['at_installed']}")
-    v.info(f"4-persistence sandbox attempts={_kv(sandbox.get('persist', {}))}")
-    v.info(f"4-persistence account attempts={_kv(account.get('persist', {}))}")
-
-    # 2b. docker socket, groups, tool cache writes
-    docker_in = sum(n for c, n in sockets_in.items() if "docker" in c)
-    docker_base = sum(n for c, n in base_socks.items() if "docker" in c)
-    v.add("2-docker-socket", docker_in == 0, docker_base > 0,
-          f"sandbox_connectable={docker_in} runner_connectable={docker_base}")
-    priv = {"adm", "docker", "sudo"}
-    in_groups = sorted(priv & set(ident.get("groups", [])))
-    base_groups = sorted(priv & set(runner["identity"].get("groups", [])))
-    v.add("2-groups", not in_groups, bool(base_groups),
-          f"sandbox_privileged_groups={','.join(in_groups) or '-'} "
-          f"runner_privileged_groups={','.join(base_groups) or '-'} "
-          f"sandbox_groups={','.join(ident.get('groups', [])) or '-'}")
-    v.add("2-toolcache-write", sandbox.get("toolcache_write") != "ok",
-          runner.get("toolcache_write") == "ok",
-          f"sandbox={sandbox.get('toolcache_write')} runner={runner.get('toolcache_write')} "
-          f"account_without_sandbox={account.get('toolcache_write')}")
-
-    # 5. sudo
-    base_ok = sudo["runner_sudo_true"] and sudo["runner_listed_allowed"]
-    ok = sudo["account_not_allowed"] and sandbox["sudo"] != "ok" and account["sudo"] != "ok"
-    v.add("5-sudo", ok, base_ok,
-          f"account_not_allowed={sudo['account_not_allowed']} sandbox_sudo={sandbox['sudo']} "
-          f"account_sudo={account['sudo']} runner_sudo={runner['sudo']}")
-    return v
-
-
-def _kv(mapping: dict) -> str:
-    return ";".join(f"{k}={mapping[k]}" for k in sorted(mapping)) or "-"
-
-
-def _fmt(found: dict) -> str:
-    return ";".join(f"{t}@{','.join(sorted(c))}" for t, c in sorted(found.items())) or "-"
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--probe", required=True)
@@ -344,7 +172,7 @@ def main() -> int:
     toolcache = os.environ.get("RUNNER_TOOL_CACHE", "/opt/hostedtoolcache")
     config = {
         "known_paths": known,
-        "forbidden": {k: p for k, p in plant["forbidden"].items() if p},
+        "forbidden": {k: p for k, p in plant["forbidden"].items() if p},  # judge checks all
         "dns_name": "github.com",
         "tcp": [f"{github_ip}:443", "1.1.1.1:443"],
         "udp_dns": ["8.8.8.8", "168.63.129.16"],
@@ -377,8 +205,10 @@ def main() -> int:
     stop_sleeper(int(plant["sleeper_pid"]))
 
     lists = {"files": allowlist(args.allowlist), "sockets": allowlist(args.socket_allowlist)}
-    verdicts = judge(plant, runner, sandbox, account, post_sandbox, pre, post_account, cron_base,
-                     sudo, lists)
+    case = {"plant": plant, "known": known, "runner": runner, "sandbox": sandbox,
+            "account": account, "pre": pre, "post_sandbox": post_sandbox,
+            "post_account": post_account, "cron_base": cron_base, "sudo": sudo}
+    verdicts = judge(case, lists, account_uid())
     if policy.notes:
         verdicts.info(f"policy notes={len(policy.notes)}")
     text = "\n".join(verdicts.lines)

@@ -31,8 +31,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Judge self-test (fixed inputs; a soft judge fails here)
+        run: /usr/bin/python3 -I -B scripts/witness/test_judge.py
+
       - name: Set up uv
-        uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6 (commit)
         with:
           enable-cache: false
 
@@ -51,7 +54,7 @@ jobs:
           src="$RUNNER_TEMP/cw-src"
           mkdir -p "$src"
           git -C "$src" init -q
-          git -C "$src" fetch -q --depth 1 https://github.com/cairnwork/cairnwork.git "$CAIRNWORK_REF"
+          git -C "$src" fetch -q --depth 1 -- https://github.com/cairnwork/cairnwork.git "$CAIRNWORK_REF"
           git -C "$src" checkout -q FETCH_HEAD
           test "$(git -C "$src" rev-parse HEAD)" = "$CAIRNWORK_REF"
           uv sync --frozen --no-dev --project "$src" --python /usr/bin/python3

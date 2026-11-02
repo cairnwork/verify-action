@@ -3,17 +3,15 @@
 Run as the runner account (python3 -I). Every canary value is registered with add-mask before it
 is written anywhere, is never printed, and is not kept in a separate file: the only copies are
 the planted ones. Writes <RUNNER_TEMP>/cw-witness/plant.json (no values): which tags were planted,
-the paths to try, and the owner/mode facts of the runner's directories.
+the paths to try and the runner's own directories. Prints only tag names (the repository is
+public: directory layouts and modes are not printed).
 """
 
 from __future__ import annotations
 
-import grp
 import json
 import os
-import pwd
 import secrets
-import stat
 import subprocess
 import sys
 
@@ -33,24 +31,6 @@ def write(path: str, text: str, mode: int) -> bool:
         handle.write(text + "\n")
     os.chmod(path, mode)
     return True
-
-
-def fact(path: str) -> dict:
-    try:
-        info = os.lstat(path)
-    except OSError:
-        return {"path": path, "exists": False}
-    try:
-        owner = pwd.getpwuid(info.st_uid).pw_name
-    except KeyError:
-        owner = str(info.st_uid)
-    try:
-        group = grp.getgrgid(info.st_gid).gr_name
-    except KeyError:
-        group = str(info.st_gid)
-    kind = "dir" if stat.S_ISDIR(info.st_mode) else "link" if stat.S_ISLNK(info.st_mode) else "file"
-    return {"path": path, "exists": True, "kind": kind, "owner": owner, "group": group,
-            "mode": oct(stat.S_IMODE(info.st_mode))}
 
 
 def runner_root() -> str:
@@ -116,28 +96,6 @@ def main() -> int:
     )
     planted["cmdline"] = True
 
-    labels = {
-        "home": home,
-        "home_work": os.path.join(home, "work"),
-        "runner_temp": rtemp,
-        "workspace": os.environ.get("GITHUB_WORKSPACE", ""),
-        "file_commands_dir": os.path.dirname(os.environ["GITHUB_ENV"]),
-        "github_env_file": os.environ["GITHUB_ENV"],
-        "runner_root": root,
-        "runner_diag": diag,
-        "toolcache": os.environ.get("RUNNER_TOOL_CACHE", "/opt/hostedtoolcache"),
-    }
-    for leaf in (".runner", ".credentials", ".credentials_rsaparams", ".env", ".path"):
-        labels[f"runner_root/{leaf}"] = os.path.join(root, leaf) if root else ""
-    facts = {label: fact(path) for label, path in labels.items() if path}
-    diag_logs: dict = {}
-    if diag and os.path.isdir(diag):
-        for name in os.listdir(diag):
-            kind = name.split("_", 1)[0] if "_" in name else "other"
-            mode = fact(os.path.join(diag, name)).get("mode", "?")
-            diag_logs[f"{kind}:{mode}"] = diag_logs.get(f"{kind}:{mode}", 0) + 1
-    facts["runner_diag_entries"] = diag_logs
-
     record = {
         "planted": [tag for tag, done in planted.items() if done],
         "not_planted": [tag for tag, done in planted.items() if not done],
@@ -146,21 +104,11 @@ def main() -> int:
                       "workspace": os.environ.get("GITHUB_WORKSPACE", "")},
         "runner_root": root,
         "sleeper_pid": sleeper.pid,
-        "facts": facts,
     }
     with open(os.path.join(state, "plant.json"), "w") as handle:
         json.dump(record, handle, indent=1, sort_keys=True)
     print("planted:", ",".join(record["planted"]) or "-")
     print("not planted:", ",".join(record["not_planted"]) or "-")
-    print("platform facts (owner/group/mode):")
-    for label, info in sorted(facts.items()):
-        if label == "runner_diag_entries":
-            print(f"  {label}: {info}")
-        elif info.get("exists"):
-            print(f"  {label}: {info['path']} {info['kind']} {info['owner']}:{info['group']} "
-                  f"{info['mode']}")
-        else:
-            print(f"  {label}: {info['path']} absent")
     return 0
 
 
