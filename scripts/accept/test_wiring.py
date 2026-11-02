@@ -371,6 +371,17 @@ class JobsApi:
         return self.answer
 
 
+class Summary(unittest.TestCase):
+    def test_skipped_claims_reach_the_summary(self):
+        env = {"check_name": "cairnwork-accept", "sha": HEAD, "note_check_name": "n", "pr_issue": None}
+        api = JobsApi((404, None))
+        self.assertTrue(R.create_checks(api, env, T.Check(T.SUCCESS, "VERIFIED", skipped=1, skipped_claims=1)))
+        self.assertIn("Skipped claim refs (not counted for this commit): 1.", api.checks[0]["output"]["summary"])
+        api = JobsApi((404, None))
+        R.create_checks(api, env, T.Check(T.SUCCESS, "VERIFIED"))
+        self.assertNotIn("Skipped claim refs", api.checks[0]["output"]["summary"])
+
+
 class JobState(unittest.TestCase):
     """verify-action#10, item 1: 404 or no job of that name is UNKNOWN, not FINISHED."""
 

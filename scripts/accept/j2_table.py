@@ -196,7 +196,7 @@ class Check:
     protection: str = "none"
     note_bound_issue: int | None = None  # set: create the separate, non-required note check
     skipped: int = 0  # ledger refs skipped as unclassifiable (non-fatal), for the summary line
-    unattributed: int = 0  # skipped claim refs that name no head: reported, not charged at J2
+    skipped_claims: int = 0  # unclassifiable claim refs: reported, not charged to a granted claim at J2
     min_protection: str = ""  # the required minimum, shown in the title when it was not met
     prior_verdict: bool = False  # an earlier verdict exists for the sha but this run's refusal won
 
@@ -233,7 +233,7 @@ def decide_check(
         "skipped": len(ledger.skipped),
     }
     if bind is not None:
-        title["unattributed"] = unattributed(ledger, bind.tests_version)
+        title["skipped_claims"] = skipped_claims(ledger, bind.tests_version)
     if any(ledger.claims[k].head_sha == sha for k in ledger.unsigned if k in ledger.claims):
         return Check(FAILURE, L.LEDGER_VERDICT_UNSIGNED, **title)  # an unhonoured verdict tag
     if sha in ledger.stuck:
@@ -280,19 +280,19 @@ def decide_check(
 
 def _budget_spent(ledger: L.Ledger, sha: str, version: str, max_attempts: int) -> bool:
     """True when the attempts of ``version`` other than this sha's own (counted signed verdicts,
-    unjudged claims, lost or stranded numbers) already reach the budget. A lost claim number
-    that names no head is left out here (``L.unattributed``): J1 already counted it before any
-    later claim, so leaving it out never grants a head an attempt J1 refused."""
+    unjudged claims, stranded numbers) already reach the budget. Unclassifiable claim refs are
+    left out here (``skipped_claims``), named head or not: J1 already counted them before any
+    later claim, so leaving them out never grants a head an attempt J1 refused, and a head one
+    of them names is held by LEDGER_VERDICT_STRANDED."""
     own = [k for k, c in ledger.claims.items()
            if k[0] == version and c.head_sha == sha and not (k in ledger.verdicts and not L.counted(ledger.verdicts[k]))]  # fmt: skip
-    return L.used(ledger, version) - len(own) - unattributed(ledger, version) >= max_attempts
+    return L.used(ledger, version) - len(own) - skipped_claims(ledger, version) >= max_attempts
 
 
-def unattributed(ledger: L.Ledger, version: str) -> int:
-    """Lost claim numbers of ``version`` naming no head. ``used`` still counts them (J1 grants
-    no attempt over them); J2 reports them rather than charge a head that holds a claim."""
-    keys = (k for k in ledger.lost_claims if k[0] == version and k not in ledger.lost_heads)
-    return len({k for k in keys if k not in ledger.claims and k not in ledger.stranded})
+def skipped_claims(ledger: L.Ledger, version: str) -> int:
+    """Unclassifiable claim numbers of ``version`` (no readable claim, no stranded verdict).
+    ``used`` still counts them, so J1 grants no attempt over them; J2 reports them instead."""
+    return len({k for k in ledger.lost_claims if k[0] == version and k not in ledger.claims and k not in ledger.stranded})
 
 
 def _refusal(code: str, prior_verdict: bool, title: dict[str, Any]) -> Check:

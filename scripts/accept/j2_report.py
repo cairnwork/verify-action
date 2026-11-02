@@ -154,8 +154,8 @@ def create_checks(api: Api, env: dict[str, Any], check: T.Check) -> bool:
             summary += " An earlier verdict for this commit is in the ledger; this run's refusal wins."
         if check.skipped:
             summary += f" Ledger records skipped: {check.skipped}."
-        if check.unattributed:
-            summary += f" Skipped claim refs naming no commit (not counted for this commit): {check.unattributed}."
+        if check.skipped_claims:
+            summary += f" Skipped claim refs (not counted for this commit): {check.skipped_claims}."
         body = {"name": env["check_name"], "head_sha": env["sha"], "status": "completed",
                 "conclusion": check.conclusion,
                 "output": {"title": title(check), "summary": summary}}  # fmt: skip
