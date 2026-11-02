@@ -52,7 +52,7 @@ LOCKED_PYPROJECT = (
     '[project]\nname = "fixture"\nversion = "0"\nrequires-python = ">=3.12"\n'
     'dependencies = ["pytest==9.1.1"]\n'
 )
-MIN_CHECKS = 120  # the e2e run fails below this many checks (no silent pass); log-scan reads it
+MIN_CHECKS = 129  # the e2e run fails below this many checks (no silent pass); log-scan reads it
 
 
 def canary_of(seed: str) -> str:
