@@ -295,7 +295,7 @@ class BudgetAtJ2(unittest.TestCase):
         led = ledger(bind(), odd, claim(2), verdict(2))
         check = self.check(led, sha=SHA1)
         self.assertEqual((check.conclusion, check.code), (T.SUCCESS, "VERIFIED"))
-        self.assertEqual((check.skipped, check.unattributed, L.unattributed(led, VER)), (1, 1, 1))
+        self.assertEqual((check.skipped, check.unattributed, T.unattributed(led, VER)), (1, 1, 1))
         self.assertEqual(L.used(led, VER), 2)  # J1 still counts it: no new attempt over it
         self.assertEqual(L.j1_gate(led, SHA2, 5, VER, 1).code, L.ATTEMPTS_EXHAUSTED)
 
@@ -303,7 +303,7 @@ class BudgetAtJ2(unittest.TestCase):
         bad = claim(1, sha=SHA2)
         odd = (bad[0], bad[1], bad[2].replace('"v":1', '"v":2'))  # unreadable, but names SHA2
         led = ledger(bind(), odd, claim(2), verdict(2))
-        self.assertEqual(L.unattributed(led, VER), 0)
+        self.assertEqual(T.unattributed(led, VER), 0)
         self.assertEqual(self.check(led, sha=SHA1).code, L.ATTEMPTS_EXHAUSTED)
 
     def test_returned_attempt_is_not_spent(self):

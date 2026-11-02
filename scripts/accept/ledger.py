@@ -115,8 +115,7 @@ class Ledger:
     stranded: dict[tuple[str, int], Entry] = field(default_factory=dict)
     lost_claims: frozenset[tuple[str, int]] = frozenset()
     stuck: frozenset[str] = frozenset()
-    # the head sha of each lost claim whose record still names one; a lost claim missing here
-    # names no head and is reported by ``unattributed``, not charged to a verified head at J2
+    # head sha of each lost claim whose record names one (others: j2_table.unattributed)
     lost_heads: dict[tuple[str, int], str] = field(default_factory=dict)
 
 
@@ -270,8 +269,7 @@ def parse_ledger(config_text: str | None, refs: list[tuple[str, str, str]], targ
             stuck.add(verdict.head_sha)
             skipped.append((f"refs/tags/verdict/{key[0]}/{key[1]}", "no_claim"))
     return Ledger(target_repo_id, binds, claims, verdicts, skipped=tuple(skipped),
-                  stranded=stranded, lost_claims=frozenset(lost), stuck=frozenset(stuck),
-                  lost_heads=lost_heads)
+                  stranded=stranded, lost_claims=frozenset(lost), stuck=frozenset(stuck), lost_heads=lost_heads)
 
 
 # --- counting and sha state ------------------------------------------------------------------
@@ -286,14 +284,6 @@ def used(ledger: Ledger, version: str) -> int:
     # a skipped claim ref or a stranded verdict is an attempt that happened: never fewer than before
     extra = {k for k in (*ledger.lost_claims, *ledger.stranded) if k[0] == version and k not in ledger.claims}
     return len(claims) - len(returned) + len(extra)
-
-
-def unattributed(ledger: Ledger, version: str) -> int:
-    """Lost claim numbers of ``version`` that name no head (no claim, no stranded verdict, no
-    parsable head_sha). ``used`` still counts them, so J1 grants no new attempt over them; J2
-    reports them instead of charging them to a head that already holds a claim."""
-    return len({k for k in ledger.lost_claims if k[0] == version and k not in ledger.claims
-                and k not in ledger.stranded and k not in ledger.lost_heads})
 
 
 def max_n(ledger: Ledger, version: str) -> int:

@@ -233,7 +233,7 @@ def decide_check(
         "skipped": len(ledger.skipped),
     }
     if bind is not None:
-        title["unattributed"] = L.unattributed(ledger, bind.tests_version)
+        title["unattributed"] = unattributed(ledger, bind.tests_version)
     if any(ledger.claims[k].head_sha == sha for k in ledger.unsigned if k in ledger.claims):
         return Check(FAILURE, L.LEDGER_VERDICT_UNSIGNED, **title)  # an unhonoured verdict tag
     if sha in ledger.stuck:
@@ -285,7 +285,14 @@ def _budget_spent(ledger: L.Ledger, sha: str, version: str, max_attempts: int) -
     later claim, so leaving it out never grants a head an attempt J1 refused."""
     own = [k for k, c in ledger.claims.items()
            if k[0] == version and c.head_sha == sha and not (k in ledger.verdicts and not L.counted(ledger.verdicts[k]))]  # fmt: skip
-    return L.used(ledger, version) - len(own) - L.unattributed(ledger, version) >= max_attempts
+    return L.used(ledger, version) - len(own) - unattributed(ledger, version) >= max_attempts
+
+
+def unattributed(ledger: L.Ledger, version: str) -> int:
+    """Lost claim numbers of ``version`` naming no head. ``used`` still counts them (J1 grants
+    no attempt over them); J2 reports them rather than charge a head that holds a claim."""
+    keys = (k for k in ledger.lost_claims if k[0] == version and k not in ledger.lost_heads)
+    return len({k for k in keys if k not in ledger.claims and k not in ledger.stranded})
 
 
 def _refusal(code: str, prior_verdict: bool, title: dict[str, Any]) -> Check:
