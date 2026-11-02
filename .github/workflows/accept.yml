@@ -116,6 +116,7 @@ jobs:
           CW_TESTS_KEY: ${{ secrets.TESTS_KEY }}
           CW_TARGET_TOKEN: ${{ github.token }}
         run: |
+          umask 077
           CW_UV="$(command -v uv)" CW_CAIRNWORK_BIN="$CW_PRIVATE/cw-src/.venv/bin" \
             "$CW_PRIVATE/cw-src/.venv/bin/python" -I .cw-accept/scripts/accept/j1_verify.py \
             >>"$CW_PRIVATE/j1.log" 2>&1

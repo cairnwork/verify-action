@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -234,7 +235,7 @@ def run_case(fx: Fixture, base: Path, name: str, inputs: dict[str, str], injecte
     }  # fmt: skip
     python = str(host / "cw-src/.venv/bin/python")
     step = subprocess.run(
-        ["sh", "-c", f'"$0" -I "$1" --driver "$2" >>"{private}/j1.log" 2>&1', python,
+        ["sh", "-c", f'umask 077; "$0" -I "$1" --driver "$2" >>"{private}/j1.log" 2>&1', python,
          str(HERE / "e2e_j1.py"), str(case)],
         capture_output=True, env=env, check=False, timeout=3600,
     )  # fmt: skip
@@ -262,6 +263,25 @@ class Checks:
         if not ok:
             self.failed.append(f"{case}: {label}")
             print(f"FAIL {case}: {label}", flush=True)
+
+
+J1_STEP = re.compile(r"\[j1 [0-9:]{8}\] ([A-Za-z_]+:? [A-Za-z0-9_:=. ]{0,80})\Z")
+
+
+def j1_steps(private: Path, canary: str) -> list[str]:
+    """J1's own fixed-shape step lines from the private log (codes, counts, exception class
+    names), for reading a failed case; anything else in the log (Core's and pytest's output) is
+    left out, and so is any line holding the canary."""
+    try:
+        text = (private / "j1.log").read_text("utf-8", "replace")
+    except OSError:
+        return []
+    out = []
+    for line in text.splitlines():
+        m = J1_STEP.match(line)
+        if m and canary not in line and not any(k in line for k in ("cnry", KEY_CANARY)):
+            out.append(m.group(1))
+    return out[:20]
 
 
 def private_bytes(private: Path) -> bytes:
@@ -300,7 +320,10 @@ def main() -> int:
         inputs = gate_stand_in(fx, event(fx, label, issue=issue, author=author))
         out = run_case(fx, base, name, {**inputs, **(override or {})}, injected)
         c.that(name, "J1 delivered a result", out.result is not None)
-        print(f"case {name}: done", flush=True)
+        r = out.result or {}
+        print(f"case {name}: done outcome={r.get('outcome')} code={r.get('code')}", flush=True)
+        for line in j1_steps(out.private, canary):
+            print(f"  j1: {line}", flush=True)
         return out
 
     def rejected(name: str, out: Outcome, code: str, *, ledger_checked: bool) -> None:

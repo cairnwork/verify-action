@@ -189,6 +189,7 @@ def log(message: str) -> None:
 def isolate_output(private: Path) -> None:
     """Point fds 1 and 2 at the 0600 log, so nothing J1 or a child prints reaches the job log."""
     fd = os.open(private / "j1.log", os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)  # the step's shell may have made it first, under its own umask
     os.dup2(fd, 1)
     os.dup2(fd, 2)
     os.close(fd)
