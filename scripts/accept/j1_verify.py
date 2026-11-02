@@ -453,8 +453,16 @@ def _locked_venv(ws: Workspace) -> str:
     for name in ("pyproject.toml", "uv.lock"):
         (deps / name).write_bytes(_base_blob(ws, name))
     venvs = VERIFIER_ROOT / "venvs"
-    venvs.mkdir(exist_ok=True)  # the group (cairnwork) comes from the setgid root
-    os.chmod(venvs, 0o2750)  # set explicitly: this process runs under umask 077
+    # Group cairnwork and the setgid bit come from the setgid root. No chmod here: the runner is
+    # not in that group, so a chmod would clear the setgid bit and new files would lose the group.
+    old_umask = os.umask(0o027)
+    try:
+        venvs.mkdir(exist_ok=True)
+    finally:
+        os.umask(old_umask)
+    st = os.stat(venvs)
+    if st.st_gid != os.stat(VERIFIER_ROOT).st_gid or not st.st_mode & 0o2000 or st.st_mode & 0o050 != 0o050:
+        raise Reject(jr.RUNNER_SETUP_PROBLEM, "DEPENDENCIES_INSTALL")
     venv = venvs / "target"
     shutil.rmtree(venv, ignore_errors=True)
     if venv.exists():
