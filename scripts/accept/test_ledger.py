@@ -105,11 +105,31 @@ class StrictReading(unittest.TestCase):
 
     def test_verdict_needs_its_claim_of_the_same_sha(self):
         led = self.assertSkipped(verdict(1))  # a verdict with no claim: skipped, not fatal
-        self.assertEqual((led.verdicts, led.skipped[0][1]), ({}, "no_claim"))
+        self.assertEqual((led.verdicts, led.skipped[0][1], len(led.stranded)), ({}, "no_claim", 1))
         led = self.assertSkipped(claim(1), verdict(1, sha=SHA2))
         self.assertEqual((len(led.claims), led.verdicts), (1, {}))
         vname, vkind, vmsg = verdict(1)
         self.assertSkipped(claim(1), (vname, vkind, vmsg.replace('"VERIFIED"', '"MAYBE"')))
+
+    def stranded_cases(self):
+        failed = verdict(1, "FAILED", code="TESTS_FAILED")
+        odd = (f"refs/tags/claim/{SHA1}/01", "commit", "x\n")  # the claim ref made unclassifiable
+        broken = (claim(1)[0], "commit", claim(1)[2].replace('"v":1', '"v":2'))
+        return (ledger(bind(), odd, failed), ledger(bind(), broken, failed),
+                ledger(bind(), failed))  # last: the claim deleted
+
+    def test_lost_claim_does_not_erase_a_failure_or_an_attempt(self):
+        for led in self.stranded_cases():
+            self.assertEqual(L.used(led, VER), 1)  # an attempt stays used
+            self.assertEqual(L.j1_gate(led, SHA1, 5, VER, 1).code, L.LEDGER_VERDICT_STRANDED)
+            self.assertIsNone(L.j1_claim_number(led, VER, 1))
+            check = T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1(), written={})
+            self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.LEDGER_VERDICT_STRANDED))
+
+    def test_stranded_verdict_is_not_a_pass(self):
+        led = ledger(bind(), verdict(1))  # VERIFIED verdict, no claim
+        check = T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1(), written={})
+        self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.LEDGER_VERDICT_STRANDED))
 
     def test_clean_ledger_skips_nothing(self):
         self.assertEqual(ledger(bind(), claim(1), verdict(1)).skipped, ())

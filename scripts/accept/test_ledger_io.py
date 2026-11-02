@@ -338,10 +338,11 @@ class Scenario(unittest.TestCase):
     def test_target_mismatch_is_unavailable(self):
         self.assertEqual(self.j1(io=self.io(target=8)), (None, L.LEDGER_UNAVAILABLE))
 
-    def test_garbage_tag_is_unavailable(self):
+    def test_garbage_tag_is_skipped_but_uses_its_attempt(self):
         io = self.io()
         self.assertTrue(io.create(f"refs/tags/claim/{VER}/1", "not json"))
-        self.assertEqual(self.j1(), (None, L.LEDGER_UNAVAILABLE))
+        self.assertEqual(self.j1(), (None, L.ATTEMPTS_EXHAUSTED))  # not unreadable; the attempt stays used
+        self.assertEqual(len(io.read().skipped), 1)
 
 
 class SignedVerdicts(Scenario):

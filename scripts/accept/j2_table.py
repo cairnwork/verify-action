@@ -46,7 +46,7 @@ J1_REJECT_CODES = (
     "INPUT_INVALID", "STALE_HEAD", "NOT_ONE_COMMIT_ON_BASE", "BASE_NOT_IN_TARGET",
     "DEPENDENCY_CHANGE_UNSUPPORTED", "NO_COMMIT", "OUT_OF_SCOPE", "PROTECTED_PATH",
     "TASK_NOT_FOUND", "TASK_NOT_ASSIGNED", "TASK_RETIRED", "TESTS_ALREADY_PUBLIC",
-    L.LEDGER_NOT_CONFIGURED, L.LEDGER_UNAVAILABLE, L.SHA_BOUND_ELSEWHERE, L.PRIOR_VERDICT,
+    L.LEDGER_VERDICT_STRANDED, L.LEDGER_NOT_CONFIGURED, L.LEDGER_UNAVAILABLE, L.SHA_BOUND_ELSEWHERE, L.PRIOR_VERDICT,
     L.ATTEMPT_PENDING, L.ATTEMPTS_EXHAUSTED, *COARSE_CODES,
 )  # fmt: skip
 J1_SCHEMA = "cairnwork-accept-j1/1"
@@ -65,7 +65,7 @@ def _tables() -> tuple[frozenset[str], frozenset[str]]:
 
 RUN_CODES, PROTECTIONS = _tables()
 KNOWN_CODES = frozenset(
-    (*J0_CODES, *J1_REJECT_CODES, J1_INCOMPLETE, L.LEDGER_CONFLICT, L.LEDGER_VERDICT_UNSIGNED, L.ATTEMPT_LOST,
+    (*J0_CODES, *J1_REJECT_CODES, J1_INCOMPLETE, L.LEDGER_CONFLICT, L.LEDGER_VERDICT_UNSIGNED, L.LEDGER_VERDICT_STRANDED, L.ATTEMPT_LOST,
      "VERIFIED", L.LEDGER_UNAVAILABLE, L.LEDGER_KEY_MISSING)
 ) | RUN_CODES
 
@@ -202,6 +202,8 @@ def decide_check(
     }
     if any(ledger.claims[k].head_sha == sha for k in ledger.unsigned if k in ledger.claims):
         return Check(FAILURE, L.LEDGER_VERDICT_UNSIGNED, **title)  # an unhonoured verdict tag
+    if sha in ledger.stuck:
+        return Check(FAILURE, L.LEDGER_VERDICT_STRANDED, **title)  # a record of this head cannot be matched
     if L.pending_claims(ledger, sha):  # row 7 (and an own write that did not land)
         if any(o == L.LEDGER_CONFLICT for o in written.values()):
             return Check(FAILURE, L.LEDGER_CONFLICT, **title)

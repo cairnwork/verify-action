@@ -49,12 +49,12 @@ REJECTED_CODES = (
     "TESTS_ALREADY_PUBLIC",
     "LEDGER_NOT_CONFIGURED",  # S2b: always, so no commit runs a candidate without a ledger
     "LEDGER_UNAVAILABLE", "SHA_BOUND_ELSEWHERE", "PRIOR_VERDICT", "ATTEMPT_PENDING",
-    "ATTEMPTS_EXHAUSTED",  # the ledger (S3)
+    "ATTEMPTS_EXHAUSTED", "LEDGER_VERDICT_STRANDED",  # the ledger (S3)
     TESTS_SETUP_PROBLEM, RUNNER_SETUP_PROBLEM,  # PREP_FAILED, by category (private log)
 )  # fmt: skip
 LEDGER_CODES = frozenset(
     {"LEDGER_UNAVAILABLE", "SHA_BOUND_ELSEWHERE", "PRIOR_VERDICT", "ATTEMPT_PENDING",
-     "ATTEMPTS_EXHAUSTED"}
+     "ATTEMPTS_EXHAUSTED", "LEDGER_VERDICT_STRANDED"}
 )  # fmt: skip
 
 # --- after the claim: what stays public of Core's code (as redact_result.py reduced it) -------
