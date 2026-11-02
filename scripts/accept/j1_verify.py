@@ -515,8 +515,16 @@ def _locked_venv(ws: Workspace) -> str:
     for name in ("pyproject.toml", "uv.lock"):
         (deps / name).write_bytes(_base_blob(ws, name))
     venvs = VERIFIER_ROOT / "venvs"
-    venvs.mkdir(exist_ok=True)  # the group (cairnwork) comes from the setgid root
-    os.chmod(venvs, 0o2750)  # set explicitly: this process runs under umask 077
+    # Group cairnwork and the setgid bit come from the setgid root. No chmod here: the runner is
+    # not in that group, so a chmod would clear the setgid bit and new files would lose the group.
+    old_umask = os.umask(0o027)
+    try:
+        venvs.mkdir(exist_ok=True)
+    finally:
+        os.umask(old_umask)
+    st = os.stat(venvs)
+    if st.st_gid != os.stat(VERIFIER_ROOT).st_gid or not st.st_mode & 0o2000 or st.st_mode & 0o050 != 0o050:
+        raise Reject(jr.RUNNER_SETUP_PROBLEM, "DEPENDENCIES_INSTALL")
     venv = venvs / "target"
     shutil.rmtree(venv, ignore_errors=True)
     if venv.exists():
@@ -525,12 +533,14 @@ def _locked_venv(ws: Workspace) -> str:
         "PATH": "/usr/bin:/bin", "HOME": str(ws.cfg.private / "home"), "UV_NO_CONFIG": "1",
         "UV_CACHE_DIR": str(ws.cfg.private / "uv-cache"), "UV_PYTHON_DOWNLOADS": "never",
     }  # fmt: skip
-    account_python = str(VERIFIER_ROOT / "venv" / "bin" / "python")
+    # the system interpreter, as for the account's own venv (j1_host.sh): a venv made from
+    # another venv links to it, and the sandbox reads only the interpreter's own roots
+    base_python = "/usr/bin/python3"
     steps = (
         [ws.cfg.uv, "export", "--directory", str(deps), "--frozen", "--all-groups", "--all-extras",
          "--no-emit-project", "--no-header", "--no-annotate", "--format", "requirements-txt",
          "--output-file", str(deps / "requirements.txt")],
-        [ws.cfg.uv, "venv", "--quiet", "--python", account_python, str(venv)],
+        [ws.cfg.uv, "venv", "--quiet", "--python", base_python, str(venv)],
         # copy, not link: the cache is owner-only (CW_PRIVATE), as in j1_host.sh
         [ws.cfg.uv, "pip", "install", "--python", str(venv / "bin" / "python"),
          "--require-hashes", "--only-binary", ":all:", "--no-deps", "--link-mode", "copy", "-r",
