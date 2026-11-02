@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import grp
 import json
 import os
 import shutil
@@ -85,9 +86,13 @@ def connectable(path: str) -> bool:
 
 
 class Walk:
-    def __init__(self, forbidden: dict, deadline: float) -> None:
+    def __init__(self, forbidden: dict, deadline: float, scan_since: float) -> None:
         self.forbidden = forbidden
         self.deadline = deadline
+        # Secrets of this job land after the VM booted, so a file whose inode last changed
+        # before that (the runner image) is listed but not searched.
+        self.scan_since = scan_since
+        self.old = 0
         self.readable = Counter()  # category -> readable regular files
         self.listable_forbidden = Counter()  # forbidden label -> listable directories
         self.readable_forbidden = Counter()  # forbidden label -> readable regular files
@@ -138,9 +143,9 @@ class Walk:
             slot["present"] += 1
             slot["connectable"] += int(connectable(path))
         elif stat.S_ISREG(mode) and not under(path, SYSTEM_TREES):
-            self._file(path, info.st_size)
+            self._file(path, info.st_size, info.st_ctime)
 
-    def _file(self, path: str, size: int) -> None:
+    def _file(self, path: str, size: int, ctime: float) -> None:
         flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC
         try:
             fd = os.open(path, flags)
@@ -150,6 +155,9 @@ class Walk:
             self.readable[category(path)] += 1
             for label in self._label(path):
                 self.readable_forbidden[label] += 1
+            if ctime < self.scan_since:
+                self.old += 1
+                return
             if size > SCAN_CAP:
                 self.large += 1
                 return
@@ -219,8 +227,14 @@ def identity() -> dict:
             ifaces = sorted(line.split(":")[0].strip() for line in handle.readlines()[2:])
     except OSError:
         pass
+    groups = []
+    for gid in os.getgroups():
+        try:
+            groups.append(grp.getgrgid(gid).gr_name)
+        except KeyError:
+            groups.append(str(gid))
     return {"uid": os.getuid(), "euid": os.geteuid(), "pid": os.getpid(), "status": status,
-            "ifaces": ifaces}
+            "ifaces": ifaces, "groups": sorted(set(groups))}
 
 
 def _bounded(func, seconds: float) -> str:
@@ -329,7 +343,9 @@ def main() -> int:
     report["network"] = network(config)
     report["direct"] = direct_reads(config["known_paths"])
     report["proc"] = proc_scan()
-    walk = Walk(config["forbidden"], time.monotonic() + config.get("walk_seconds", 900))
+    started = time.monotonic()
+    walk = Walk(config["forbidden"], started + config.get("walk_seconds", 900),
+                config.get("scan_since", 0))
     walk.run()
     report["walk"] = {
         "readable": dict(walk.readable),
@@ -337,10 +353,15 @@ def main() -> int:
         "listable_forbidden": dict(walk.listable_forbidden),
         "unlistable_dirs": walk.unlistable,
         "large_unscanned": walk.large,
+        "old_unscanned": walk.old,
+        "seconds": round(time.monotonic() - started),
         "sockets": walk.sockets,
         "hits": {tag: sorted(cats) for tag, cats in walk.hits.items()},
         "truncated": walk.truncated,
     }
+    # The tool cache is shared by later steps: a write there would outlive the run.
+    tool_file = os.path.join(config["toolcache"], f"{PERSIST_NAME}-{args.mode}")
+    report["toolcache_write"] = _write(tool_file)
     if args.persist:
         report["persist"] = persist()
     json.dump(report, sys.stdout, sort_keys=True)

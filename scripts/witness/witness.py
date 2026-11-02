@@ -42,15 +42,18 @@ def run(argv: list, **kw) -> subprocess.CompletedProcess:
 
 
 def stage(probe: str, config: dict) -> tuple[str, str]:
-    """Copy the probe and its config where the account can read them (group cairnwork)."""
-    STAGE.mkdir(mode=0o750, exist_ok=True)
-    os.chmod(STAGE, 0o2750)
+    """Copy the probe and its config where the account can read them. Read is granted to other,
+    as Cairnwork's grant_read does: the runner process is not an effective member of the shared
+    group, so a chmod here strips setgid and new files would not carry that group. Nothing staged
+    is private (the probe's source and a list of paths)."""
+    STAGE.mkdir(exist_ok=True)
+    os.chmod(STAGE, 0o755)
     target = STAGE / "probe.py"
     shutil.copyfile(probe, target)
-    os.chmod(target, 0o640)
+    os.chmod(target, 0o644)
     cfg = STAGE / "config.json"
     cfg.write_text(json.dumps(config))
-    os.chmod(cfg, 0o640)
+    os.chmod(cfg, 0o644)
     return str(target), str(cfg)
 
 
@@ -67,6 +70,14 @@ def probe_run(label: str, argv: list, state: Path) -> dict:
         return {"error": f"no-json rc={done.returncode}", "stderr_tail": tail}
     (state / f"{label}.json").write_text(json.dumps(report, indent=1, sort_keys=True))
     return report
+
+
+def boot_time() -> float:
+    with open("/proc/stat") as handle:
+        for line in handle:
+            if line.startswith("btime "):
+                return float(line.split()[1])
+    return 0.0
 
 
 def account_uid() -> int:
@@ -113,6 +124,9 @@ def cleanup_account() -> None:
     ACCOUNT.kill_all()
     for place in ("/var/tmp", "/dev/shm", "/tmp"):
         run(["sudo", "-n", "rm", "-f", f"{place}/{PERSIST_NAME}"])
+    toolcache = os.environ.get("RUNNER_TOOL_CACHE", "/opt/hostedtoolcache")
+    for mode in ("runner", "account", "sandbox"):
+        run(["sudo", "-n", "rm", "-f", f"{toolcache}/{PERSIST_NAME}-{mode}"])
     run(["sudo", "-n", "crontab", "-r", "-u", ACCOUNT.user])
 
 
@@ -240,6 +254,8 @@ def judge(plant: dict, runner: dict, sandbox: dict, account: dict, post_sandbox:
           f"runner_connectable={_kv(base_socks)}")
     v.info(f"2-readable sandbox categories={_kv(walk_in['readable'])} "
            f"large_unscanned={walk_in['large_unscanned']} "
+           f"old_unscanned={walk_in['old_unscanned']} seconds={walk_in['seconds']} "
+           f"(runner seconds={walk_base['seconds']}) "
            f"unlistable_dirs={walk_in['unlistable_dirs']}")
     v.info("2-sockets runner present=" + _kv({c: s["present"]
                                               for c, s in walk_base["sockets"].items()}))
@@ -272,6 +288,23 @@ def judge(plant: dict, runner: dict, sandbox: dict, account: dict, post_sandbox:
           f"cron_detector={cron_base} at_installed={pre['at_installed']}")
     v.info(f"4-persistence sandbox attempts={_kv(sandbox.get('persist', {}))}")
     v.info(f"4-persistence account attempts={_kv(account.get('persist', {}))}")
+
+    # 2b. docker socket, groups, tool cache writes
+    docker_in = sum(n for c, n in sockets_in.items() if "docker" in c)
+    docker_base = sum(n for c, n in base_socks.items() if "docker" in c)
+    v.add("2-docker-socket", docker_in == 0, docker_base > 0,
+          f"sandbox_connectable={docker_in} runner_connectable={docker_base}")
+    priv = {"adm", "docker", "sudo"}
+    in_groups = sorted(priv & set(ident.get("groups", [])))
+    base_groups = sorted(priv & set(runner["identity"].get("groups", [])))
+    v.add("2-groups", not in_groups, bool(base_groups),
+          f"sandbox_privileged_groups={','.join(in_groups) or '-'} "
+          f"runner_privileged_groups={','.join(base_groups) or '-'} "
+          f"sandbox_groups={','.join(ident.get('groups', [])) or '-'}")
+    v.add("2-toolcache-write", sandbox.get("toolcache_write") != "ok",
+          runner.get("toolcache_write") == "ok",
+          f"sandbox={sandbox.get('toolcache_write')} runner={runner.get('toolcache_write')} "
+          f"account_without_sandbox={account.get('toolcache_write')}")
 
     # 5. sudo
     base_ok = sudo["runner_sudo_true"] and sudo["runner_listed_allowed"]
@@ -306,7 +339,9 @@ def main() -> int:
     github_ip = socket.getaddrinfo("github.com", 443, socket.AF_INET)[0][4][0]
     known = dict(plant["paths"])
     known.update(step_env_file=os.environ["GITHUB_ENV"],
-                 step_output_file=os.environ["GITHUB_OUTPUT"], step_script=args.step_script)
+                 step_output_file=os.environ["GITHUB_OUTPUT"], step_script=args.step_script,
+                 event_json=os.environ.get("GITHUB_EVENT_PATH", ""))
+    toolcache = os.environ.get("RUNNER_TOOL_CACHE", "/opt/hostedtoolcache")
     config = {
         "known_paths": known,
         "forbidden": {k: p for k, p in plant["forbidden"].items() if p},
@@ -314,6 +349,8 @@ def main() -> int:
         "tcp": [f"{github_ip}:443", "1.1.1.1:443"],
         "udp_dns": ["8.8.8.8", "168.63.129.16"],
         "walk_seconds": 900,
+        "toolcache": toolcache,
+        "scan_since": boot_time() - 600,
     }
     probe, cfg = stage(args.probe, config)
     argv = [PYTHON, "-I", "-S", probe, "--config", cfg]
@@ -325,7 +362,7 @@ def main() -> int:
                                   mask_home_credentials=False)
     policy_path = STAGE / "policy"
     policy_path.write_text(policy.text)
-    os.chmod(policy_path, 0o640)
+    os.chmod(policy_path, 0o644)
     sandbox = probe_run("sandbox", ACCOUNT.wrap([*argv, "--mode", "sandbox", "--persist"],
                                                 policy_path, INNER_ENV), state)
     post_sandbox = persist_state()
