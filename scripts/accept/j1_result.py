@@ -48,6 +48,7 @@ REJECTED_CODES = (
     "TASK_NOT_FOUND", "TASK_NOT_ASSIGNED", "TASK_RETIRED",
     "TESTS_ALREADY_PUBLIC",
     "LEDGER_NOT_CONFIGURED",  # S2b: always, so no commit runs a candidate without a ledger
+    "LEDGER_KEY_MISSING",  # the caller says J2 has no verdict key: no claim J2 could never judge
     "LEDGER_UNAVAILABLE", "SHA_BOUND_ELSEWHERE", "PRIOR_VERDICT", "ATTEMPT_PENDING",
     "ATTEMPTS_EXHAUSTED", "LEDGER_VERDICT_STRANDED",  # the ledger (S3)
     TESTS_SETUP_PROBLEM, RUNNER_SETUP_PROBLEM,  # PREP_FAILED, by category (private log)

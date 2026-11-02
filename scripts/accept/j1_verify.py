@@ -10,7 +10,9 @@ Steps (v2.2 section 3, "J1 的順序"):
 1. Runner self-check; owner-only private directory; from here every byte this process and its
    children print goes to ``<private>/j1.log`` (0600). No ledger configured (no ledger
    repository or no claim key): stop with ``LEDGER_NOT_CONFIGURED`` before anything is fetched,
-   so no candidate ever runs without a ledger.
+   so no candidate ever runs without a ledger. ``CW_HAS_VERDICT_KEY=false`` (J2 will have no
+   verdict key): stop with ``LEDGER_KEY_MISSING`` before anything is fetched, so no claim is
+   written that J2 could never judge (verify-action#35). Unset or empty: not checked.
 2. Fetch the PR head and the target branch (objects only, nothing checked out); check the head is
    still the PR's (``STALE_HEAD``), one commit on head^ (``NOT_ONE_COMMIT_ON_BASE``), head^ in the
    target branch (``BASE_NOT_IN_TARGET``), no dependency file touched. Tests repo: the tree plus
@@ -189,6 +191,7 @@ class Config:
     target_token: str = field(repr=False, default="")
     ledger_key: str = field(repr=False, default="")
     verdict_pubkey: str = ""  # public half of the verdict key; empty: J1 does not check signatures
+    has_verdict_key: bool | None = None  # from CW_HAS_VERDICT_KEY; None: the caller did not say
 
 
 @dataclass
@@ -202,6 +205,9 @@ class Sources:
 
 def _pop_secrets(env: dict[str, str]) -> dict[str, str]:
     return {name: env.pop(name, "") for name in ("CW_TESTS_KEY", "CW_TARGET_TOKEN", "CW_LEDGER_KEY")}
+
+
+_FLAG = {"": None, "true": True, "false": False}  # CW_HAS_VERDICT_KEY; anything else: INPUT_INVALID
 
 
 def read_config(env: dict[str, str]) -> tuple[Config | None, str, int, int]:
@@ -222,6 +228,7 @@ def read_config(env: dict[str, str]) -> tuple[Config | None, str, int, int]:
         and int(env["CW_MAX_ATTEMPTS"]) <= L.MAX_ATTEMPTS_LIMIT,
         os.path.isabs(env.get("CW_PRIVATE", "")), os.path.isabs(env.get("CW_CAIRNWORK_BIN", "")),
         os.path.isabs(env.get("CW_UV", "")),
+        env.get("CW_HAS_VERDICT_KEY", "") in _FLAG,
     )  # fmt: skip
     big = (env["CW_ISSUE"], env["CW_PR"], env["CW_TARGET_REPO_ID"]) if all(checks) else ()
     if not all(checks) or any(int(v) > MAX_ISSUE for v in big):
@@ -236,6 +243,7 @@ def read_config(env: dict[str, str]) -> tuple[Config | None, str, int, int]:
         max_attempts=int(env["CW_MAX_ATTEMPTS"]), tests_key=secrets["CW_TESTS_KEY"],
         target_token=secrets["CW_TARGET_TOKEN"], ledger_key=secrets["CW_LEDGER_KEY"],
         verdict_pubkey=env.get("CW_LEDGER_VERDICT_PUBKEY", "").strip(),
+        has_verdict_key=_FLAG[env.get("CW_HAS_VERDICT_KEY", "")],
     )  # fmt: skip
     return cfg, head, run_id, attempt
 
@@ -728,6 +736,10 @@ def run(cfg: Config, src: Sources, ledger: Ledger | None) -> dict[str, Any]:
     if ledger is None:
         log("ledger: not configured")
         return jr.rejected(**ids, code="LEDGER_NOT_CONFIGURED")
+    if cfg.has_verdict_key is False:  # J2 would stop with LEDGER_KEY_MISSING: claim nothing
+        log("ledger: no verdict key for J2")
+        close_ledger(ledger)
+        return jr.rejected(**ids, code=L.LEDGER_KEY_MISSING)
     if not cfg.verdict_pubkey:
         log(WARN_NO_VERDICT_KEY)
     elif not lio._PUBKEY.match(cfg.verdict_pubkey):
