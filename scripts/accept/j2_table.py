@@ -196,6 +196,7 @@ class Check:
     protection: str = "none"
     note_bound_issue: int | None = None  # set: create the separate, non-required note check
     skipped: int = 0  # ledger refs skipped as unclassifiable (non-fatal), for the summary line
+    unattributed: int = 0  # skipped claim refs that name no head: reported, not charged at J2
     min_protection: str = ""  # the required minimum, shown in the title when it was not met
     prior_verdict: bool = False  # an earlier verdict exists for the sha but this run's refusal won
 
@@ -231,6 +232,8 @@ def decide_check(
         "note_bound_issue": note,
         "skipped": len(ledger.skipped),
     }
+    if bind is not None:
+        title["unattributed"] = L.unattributed(ledger, bind.tests_version)
     if any(ledger.claims[k].head_sha == sha for k in ledger.unsigned if k in ledger.claims):
         return Check(FAILURE, L.LEDGER_VERDICT_UNSIGNED, **title)  # an unhonoured verdict tag
     if sha in ledger.stuck:
@@ -277,10 +280,12 @@ def decide_check(
 
 def _budget_spent(ledger: L.Ledger, sha: str, version: str, max_attempts: int) -> bool:
     """True when the attempts of ``version`` other than this sha's own (counted signed verdicts,
-    unjudged claims, lost or stranded numbers) already reach the budget."""
+    unjudged claims, lost or stranded numbers) already reach the budget. A lost claim number
+    that names no head is left out here (``L.unattributed``): J1 already counted it before any
+    later claim, so leaving it out never grants a head an attempt J1 refused."""
     own = [k for k, c in ledger.claims.items()
            if k[0] == version and c.head_sha == sha and not (k in ledger.verdicts and not L.counted(ledger.verdicts[k]))]  # fmt: skip
-    return L.used(ledger, version) - len(own) >= max_attempts
+    return L.used(ledger, version) - len(own) - L.unattributed(ledger, version) >= max_attempts
 
 
 def _refusal(code: str, prior_verdict: bool, title: dict[str, Any]) -> Check:

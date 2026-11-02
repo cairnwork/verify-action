@@ -115,6 +115,9 @@ class Ledger:
     stranded: dict[tuple[str, int], Entry] = field(default_factory=dict)
     lost_claims: frozenset[tuple[str, int]] = frozenset()
     stuck: frozenset[str] = frozenset()
+    # the head sha of each lost claim whose record still names one; a lost claim missing here
+    # names no head and is reported by ``unattributed``, not charged to a verified head at J2
+    lost_heads: dict[tuple[str, int], str] = field(default_factory=dict)
 
 
 # --- strict reading --------------------------------------------------------------------------
@@ -238,6 +241,7 @@ def parse_ledger(config_text: str | None, refs: list[tuple[str, str, str]], targ
     verdicts: dict[tuple[str, int], Entry] = {}
     skipped: list[tuple[str, str]] = []
     lost: set[tuple[str, int]] = set()
+    lost_heads: dict[tuple[str, int], str] = {}
     stuck: set[str] = set()
     stranded: dict[tuple[str, int], Entry] = {}
     for name, objtype, message in refs:
@@ -255,6 +259,8 @@ def parse_ledger(config_text: str | None, refs: list[tuple[str, str, str]], targ
                     stuck.add(head)
                 if match.group(3) == "claim":
                     lost.add((match.group(4), int(match.group(5))))
+                    if head is not None:
+                        lost_heads[(match.group(4), int(match.group(5)))] = head
             else:  # an odd name that still carries a head sha: hold that head, fail closed
                 stuck.update(re.findall(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])", name))
     for key, verdict in list(verdicts.items()):
@@ -264,7 +270,8 @@ def parse_ledger(config_text: str | None, refs: list[tuple[str, str, str]], targ
             stuck.add(verdict.head_sha)
             skipped.append((f"refs/tags/verdict/{key[0]}/{key[1]}", "no_claim"))
     return Ledger(target_repo_id, binds, claims, verdicts, skipped=tuple(skipped),
-                  stranded=stranded, lost_claims=frozenset(lost), stuck=frozenset(stuck))
+                  stranded=stranded, lost_claims=frozenset(lost), stuck=frozenset(stuck),
+                  lost_heads=lost_heads)
 
 
 # --- counting and sha state ------------------------------------------------------------------
@@ -279,6 +286,14 @@ def used(ledger: Ledger, version: str) -> int:
     # a skipped claim ref or a stranded verdict is an attempt that happened: never fewer than before
     extra = {k for k in (*ledger.lost_claims, *ledger.stranded) if k[0] == version and k not in ledger.claims}
     return len(claims) - len(returned) + len(extra)
+
+
+def unattributed(ledger: Ledger, version: str) -> int:
+    """Lost claim numbers of ``version`` that name no head (no claim, no stranded verdict, no
+    parsable head_sha). ``used`` still counts them, so J1 grants no new attempt over them; J2
+    reports them instead of charging them to a head that already holds a claim."""
+    return len({k for k in ledger.lost_claims if k[0] == version and k not in ledger.claims
+                and k not in ledger.stranded and k not in ledger.lost_heads})
 
 
 def max_n(ledger: Ledger, version: str) -> int:
