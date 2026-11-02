@@ -319,6 +319,40 @@ def leak_checks(c: Checks, case: str, out: Outcome, canary: str, ran: bool) -> N
         c.that(case, "baseline: test name in private files", f"test_{canary}".encode() in private_bytes(out.private))
 
 
+def venv_facts() -> None:
+    """For reading a failed lock-file case: modes of the venv J1 built (no test content in it)
+    and how the account's import of pytest ends, unconfined and in Cairnwork's policy."""
+    import grp
+    import re as _re
+    import stat as _stat
+
+    venv = Path("/var/lib/cairnwork/venvs/target")
+    site = next(iter(sorted(venv.glob("lib/python3*/site-packages"))), venv / "lib")
+    for path in (venv.parent.parent, venv.parent, venv, venv / "bin", venv / "bin" / "python",
+                 venv / "pyvenv.cfg", site, site / "pytest" / "__init__.py"):  # fmt: skip
+        try:
+            st = os.lstat(path)
+            link = f" -> {os.readlink(path)}" if _stat.S_ISLNK(st.st_mode) else ""
+            print(f"  venv: {path} {oct(st.st_mode & 0o7777)} {grp.getgrgid(st.st_gid).gr_name}{link}", flush=True)
+        except OSError as exc:
+            print(f"  venv: {path} {type(exc).__name__}", flush=True)
+    from cairnwork import pytest_config
+    from cairnwork.verifier_account import VerifierAccount, _backend
+
+    account, py = VerifierAccount(), str(venv / "bin" / "python")
+    policy = _backend().policy(read_roots=pytest_config.interpreter_roots(py), write_roots=(),
+                               mask_home_credentials=False)  # fmt: skip
+    policy_file = account.root / "e2e-diag.policy"
+    policy_file.write_text(policy.text)
+    os.chmod(policy_file, 0o640)
+    for label, profile in (("unconfined", None), ("policy", policy_file)):
+        done = subprocess.run(account.wrap([py, "-P", "-c", "import pytest"], profile), capture_output=True,
+                              text=True, cwd=account.root, check=False, timeout=120)  # fmt: skip
+        last = (done.stderr.strip().splitlines() or [""])[-1]
+        print(f"  venv: as account {label}: exit {done.returncode} {_re.sub(r'[^A-Za-z0-9_:./ -]', '?', last)[:160]}", flush=True)
+    policy_file.unlink()
+
+
 def main() -> int:
     seed = os.environ["CW_E2E_SEED"]
     canary = canary_of(seed)
@@ -365,6 +399,8 @@ def main() -> int:
     out = case("locked-deps", "locked")
     r = out.result or {}
     c.that("locked-deps", "VERIFIED", r.get("outcome") == "ran" and r.get("code") == "CORE_VERIFIED")
+    if r.get("code") != "CORE_VERIFIED":
+        venv_facts()
     venv = Path("/var/lib/cairnwork/venvs/target")
     c.that("locked-deps", "venv group-readable", venv.is_dir()
            and (venv.stat().st_mode & 0o057) == 0o050)  # fmt: skip
