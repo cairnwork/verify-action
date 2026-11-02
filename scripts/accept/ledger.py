@@ -320,8 +320,8 @@ def j1_gate(ledger: Ledger, sha: str, issue: int, version: str, max_attempts: in
     bind = ledger.binds.get(sha)
     if bind is not None and (bind.issue, bind.tests_version) != (issue, version):
         return Gate(SHA_BOUND_ELSEWHERE)
-    if sha in ledger.stuck:
-        return Gate(LEDGER_VERDICT_STRANDED)
+    if sha in ledger.stuck or any(ledger.claims[k].head_sha == sha for k in ledger.unsigned if k in ledger.claims):
+        return Gate(LEDGER_VERDICT_STRANDED)  # a verdict tag of this head that is not honoured
     if counted_verdicts(ledger, sha):
         return Gate(PRIOR_VERDICT)
     if pending_claims(ledger, sha):

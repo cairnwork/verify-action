@@ -263,6 +263,30 @@ def j1(text=None, success=True, attempt=1):
     return T.J1(success, result, attempt if result is None else result["j1_attempt"])
 
 
+class BudgetAtJ2(unittest.TestCase):
+    """J2 holds the attempt budget over honoured data, independent of J1's gate."""
+
+    def check(self, led, sha=SHA2, max_attempts=1):
+        return T.decide_check(led, sha=sha, j0_code=None, pr_issue=5, j1=T.J1(True, T.parse_j1(j1_result(sha=sha), run_id=100, sha=sha), 1),
+                              written={}, max_attempts=max_attempts)
+
+    def test_further_verified_claim_is_not_a_pass(self):
+        led = ledger(bind(sha=SHA2, k=4), claim(1), verdict(1), claim(2, sha=SHA2, k=5), verdict(2, sha=SHA2, k=6))
+        check = self.check(led)
+        self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.ATTEMPTS_EXHAUSTED))
+        self.assertEqual(self.check(led, max_attempts=2).conclusion, T.SUCCESS)
+
+    def test_first_claim_within_budget_passes_and_unjudged_claims_count(self):
+        led = ledger(claim(1), verdict(1))
+        self.assertEqual(self.check(led, sha=SHA1).conclusion, T.SUCCESS)
+        led = ledger(claim(1, sha=SHA2, k=4), claim(2), verdict(2))  # claim 1 unjudged, still an attempt
+        self.assertEqual(self.check(led, sha=SHA1).code, L.ATTEMPTS_EXHAUSTED)
+
+    def test_returned_attempt_is_not_spent(self):
+        led = ledger(claim(1, sha=SHA2, k=4), verdict(1, "NOT_CONSUMED", sha=SHA2, k=5, code="BAD_SCOPE"), claim(2), verdict(2))
+        self.assertEqual(self.check(led, sha=SHA1).conclusion, T.SUCCESS)
+
+
 class Table(unittest.TestCase):
     def decide(self, led, j1v, written=None, j0=None, issue=5):
         return T.decide_check(led, sha=SHA1, j0_code=j0, pr_issue=issue, j1=j1v, written=written or {})

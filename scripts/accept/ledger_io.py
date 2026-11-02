@@ -21,7 +21,8 @@ cannot show that a verdict tag came from J2. With ``sign=True`` (J2, which must 
 ``ssh_key``) the verdict commit is SSH-signed with that key, and ``read`` honours only verdict
 commits whose signature verifies against that key's public half (``git verify-commit``); any
 other verdict (unsigned, other key, bad signature) is left out of ``Ledger.verdicts`` and listed
-in ``Ledger.unsigned``. Claims and binds are never signed. A reader without ``sign`` (J1) neither signs nor checks.
+in ``Ledger.unsigned``. Claims and binds are never signed. A reader without ``sign`` (J1) never signs; given ``verdict_pubkey`` (the public half, not a secret) it
+checks verdicts by the same rule, and without it reads as before.
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ WRITE_TRIES = 3
 _URL = re.compile(
     r"(?:git@github\.com:|https://github\.com/)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\.git\Z"
 )
+_PUBKEY = re.compile(r"(?:ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp[0-9]{3}) [A-Za-z0-9+/=]{20,2000}(?: [^\n\r]{0,100})?\Z")
 _SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]{1,512}\Z")
 _SPACES = ("bind", "claim", "verdict")
 
@@ -61,16 +63,23 @@ class GitLedger:
 
     def __init__(self, url: str, target_repo_id: int, *, ssh_key: str | None = None,
                  known_hosts: str | None = None, token: str | None = None,
-                 sign: bool = False) -> None:  # fmt: skip
+                 sign: bool = False, verdict_pubkey: str | None = None) -> None:  # fmt: skip
         if sign and ssh_key is None:
             raise ValueError("sign needs a key")
         self.url, self.target_repo_id, self._sign = url, target_repo_id, sign
+        self._check_verdicts = sign or bool(verdict_pubkey)  # J1 checks with the public half only
         self.skipped = 0  # refs the last successful read() skipped as unclassifiable
         self._dir = tempfile.mkdtemp(prefix="ledger-")  # 0700
         self._env = _git_env(self._dir, ssh_key, known_hosts, token)
         if sign:
             try:
                 self._env.update(_signing_env(self._dir, ssh_key, self._env))  # type: ignore[arg-type]
+            except BaseException:
+                self.close()
+                raise
+        elif verdict_pubkey:
+            try:
+                self._env.update(_verify_env(self._dir, verdict_pubkey, self._env))
             except BaseException:
                 self.close()
                 raise
@@ -104,7 +113,7 @@ class GitLedger:
                 *(f"refs/l/{s}/" for s in _SPACES),
             )  # fmt: skip
             records, unsigned = _records(out), set()
-            if self._sign:
+            if self._check_verdicts:
                 records, unsigned = self._honour_signed(records)
             ledger = L.parse_ledger(config, records, self.target_repo_id)
             self.skipped = len(ledger.skipped)
@@ -180,12 +189,31 @@ def _signing_env(home: str, ssh_key: str, env: dict) -> dict:
                           timeout=GIT_TIMEOUT, check=False)  # fmt: skip
     if done.returncode != 0 or not done.stdout.strip():
         raise ValueError("signing key")
+    allowed = _write_allowed(home, done.stdout.strip())
+    extra = [("gpg.format", "ssh"), ("user.signingkey", ssh_key),
+             ("gpg.ssh.allowedSignersFile", allowed)]  # fmt: skip
+    return _extra_config(env, extra)
+
+
+def _verify_env(home: str, pubkey: str, env: dict) -> dict:
+    """Extra git config for a reader that only verifies: the allowed-signers file holds the one
+    public key the caller named (the same file J2 builds from its own key)."""
+    key = pubkey.strip()
+    if not _PUBKEY.match(key):
+        raise ValueError("verdict pubkey")
+    allowed = _write_allowed(home, key)
+    return _extra_config(env, [("gpg.format", "ssh"), ("gpg.ssh.allowedSignersFile", allowed)])
+
+
+def _write_allowed(home: str, pubkey: str) -> str:
     allowed = os.path.join(home, "allowed_signers")
     fd = os.open(allowed, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write("cairnwork-accept " + done.stdout.strip() + "\n")
-    extra = [("gpg.format", "ssh"), ("user.signingkey", ssh_key),
-             ("gpg.ssh.allowedSignersFile", allowed)]  # fmt: skip
+        f.write("cairnwork-accept " + pubkey + "\n")
+    return allowed
+
+
+def _extra_config(env: dict, extra: list[tuple[str, str]]) -> dict:
     n = int(env["GIT_CONFIG_COUNT"])
     out = {"GIT_CONFIG_COUNT": str(n + len(extra))}
     for i, (key, value) in enumerate(extra, n):

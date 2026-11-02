@@ -214,6 +214,7 @@ def decide_check(
     written: dict[tuple[str, int], str],
     ledger_error: str = L.LEDGER_UNAVAILABLE,
     min_protection: str = DEFAULT_MIN_PROTECTION,
+    max_attempts: int | None = None,
 ) -> Check:
     """``ledger``: read again after the writes, right before creating the check (None: could
     not read it). ``written``: (version, n) -> outcome of each own-claim verdict write this J2
@@ -253,6 +254,8 @@ def decide_check(
     if verdicts:  # rows 3-6: the sha's counted verdicts decide, any non-VERIFIED fails
         protections = {v.protection for v in verdicts}
         if L.aggregate(verdicts):
+            if max_attempts is not None and any(_budget_spent(ledger, sha, v.tests_version, max_attempts) for v in verdicts):
+                return Check(FAILURE, L.ATTEMPTS_EXHAUSTED, **title)  # a claim past the budget never passes
             below = sorted(p for p in protections if not meets_minimum(p, min_protection))
             if below:
                 return Check(FAILURE, PROTECTION_BELOW_MINIMUM, protection=below[0],
@@ -270,6 +273,14 @@ def decide_check(
     if j1.result["outcome"] == "ran":  # J1 says it ran, but no claim of this run: never trusted
         return Check(FAILURE, L.LEDGER_CONFLICT, **title)
     return _refusal(j1.result["code"], False, title)
+
+
+def _budget_spent(ledger: L.Ledger, sha: str, version: str, max_attempts: int) -> bool:
+    """True when the attempts of ``version`` other than this sha's own (counted signed verdicts,
+    unjudged claims, lost or stranded numbers) already reach the budget."""
+    own = [k for k, c in ledger.claims.items()
+           if k[0] == version and c.head_sha == sha and not (k in ledger.verdicts and not L.counted(ledger.verdicts[k]))]  # fmt: skip
+    return L.used(ledger, version) - len(own) >= max_attempts
 
 
 def _refusal(code: str, prior_verdict: bool, title: dict[str, Any]) -> Check:

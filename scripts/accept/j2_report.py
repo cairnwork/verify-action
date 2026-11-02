@@ -15,6 +15,7 @@ outputs through ``env:``, never into ``run:``); each is checked for shape before
     ACCEPT_J1_JOB_NAME       J1's job name, to find its attempt and status through the API
     ACCEPT_LEDGER_URL        ledger repository (https://github.com/<owner>/<name>.git or
                              git@github.com:<owner>/<name>.git); empty: LEDGER_NOT_CONFIGURED
+    ACCEPT_MAX_ATTEMPTS      the attempt budget J2 enforces itself (1-20; absent: not enforced here)
     ACCEPT_MIN_PROTECTION    lowest protection level a VERIFIED may have (j2_table.PROTECTION_LEVELS;
                              empty: same_process_only); a lower or unknown level fails the check
     ACCEPT_CHECK_NAME, ACCEPT_NOTE_CHECK_NAME   names of the required and the note check
@@ -175,6 +176,7 @@ def read_env(environ: dict[str, str]) -> dict[str, Any] | None:
     ok = ok and (not j0_code or bool(L._CODE.match(j0_code))) and (not issue or bool(_INT.match(issue)))
     ok = ok and all(_NAME.match(get(k)) for k in ("ACCEPT_J1_JOB_NAME", "ACCEPT_CHECK_NAME", "ACCEPT_NOTE_CHECK_NAME"))
     ok = ok and (not get("ACCEPT_MIN_PROTECTION") or get("ACCEPT_MIN_PROTECTION") in T.PROTECTION_LEVELS)
+    ok = ok and (not get("ACCEPT_MAX_ATTEMPTS") or (_INT.match(get("ACCEPT_MAX_ATTEMPTS")) and 1 <= int(get("ACCEPT_MAX_ATTEMPTS")) <= L.MAX_ATTEMPTS_LIMIT))
     ok = ok and (not get("ACCEPT_LEDGER_URL") or bool(_HTTPS_URL.match(get("ACCEPT_LEDGER_URL"))))
     if not ok or not get("ACCEPT_APP_TOKEN"):
         return None
@@ -188,6 +190,7 @@ def read_env(environ: dict[str, str]) -> dict[str, Any] | None:
         "note_check_name": get("ACCEPT_NOTE_CHECK_NAME"), "token": get("ACCEPT_APP_TOKEN"),
         "ledger_key": get("ACCEPT_LEDGER_KEY"),
         "min_protection": get("ACCEPT_MIN_PROTECTION") or T.DEFAULT_MIN_PROTECTION,
+        "max_attempts": int(get("ACCEPT_MAX_ATTEMPTS")) if get("ACCEPT_MAX_ATTEMPTS") else None,
     }  # fmt: skip
 
 
@@ -200,7 +203,8 @@ def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None, no_ledger: str =
         attempt = j1_attempt_from_api(api, env["j1_job_name"], env["run_id"])
     j1 = T.J1(env["j1_job_success"], result, attempt)
     common = {"sha": env["sha"], "j0_code": env["j0_code"], "pr_issue": env["pr_issue"], "j1": j1,
-              "min_protection": env.get("min_protection", T.DEFAULT_MIN_PROTECTION)}
+              "min_protection": env.get("min_protection", T.DEFAULT_MIN_PROTECTION),
+              "max_attempts": env.get("max_attempts")}
     if env["j0_code"] in T.NO_CHECK_J0:
         return T.decide_check(None, written={}, **common)
     if io is None:

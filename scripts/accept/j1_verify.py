@@ -109,9 +109,10 @@ class GitLedger:
     steps 7-8 are ``j1_claim`` (bind if not yet bound, read again, claim)."""
 
     def __init__(self, url: str, target_repo_id: int, max_attempts: int, ids: dict[str, int],
-                 key_dir: Path | None = None, key: str = "") -> None:  # fmt: skip
+                 key_dir: Path | None = None, key: str = "", verdict_pubkey: str = "") -> None:  # fmt: skip
         self.url, self.target_repo_id, self.max_attempts = url, target_repo_id, max_attempts
         self.ids, self.key_dir, self._key = ids, key_dir, key
+        self.verdict_pubkey = verdict_pubkey.strip()
         self._io: lio.GitLedger | None = None
 
     def _ledger(self) -> lio.GitLedger:
@@ -125,7 +126,8 @@ class GitLedger:
                     with os.fdopen(fd, "w") as handle:
                         handle.write(text)
             self._key = ""
-            self._io = lio.GitLedger(self.url, self.target_repo_id, ssh_key=ssh_key, known_hosts=known_hosts)
+            self._io = lio.GitLedger(self.url, self.target_repo_id, ssh_key=ssh_key, known_hosts=known_hosts,
+                                      verdict_pubkey=self.verdict_pubkey or None)
         return self._io
 
     def check(self, head: str, issue: int, version: str) -> str | None:
@@ -153,7 +155,8 @@ def ledger_for(cfg: Config) -> Ledger | None:
         return None
     ids = {"pr": cfg.pr, "run_id": cfg.run_id, "j1_attempt": cfg.run_attempt}
     return GitLedger(f"git@github.com:{cfg.ledger_repo}.git", cfg.target_repo_id, cfg.max_attempts,
-                     ids, key_dir=cfg.private / "ledger-keys", key=cfg.ledger_key)  # fmt: skip
+                     ids, key_dir=cfg.private / "ledger-keys", key=cfg.ledger_key,
+                     verdict_pubkey=cfg.verdict_pubkey)  # fmt: skip
 
 
 class Reject(Exception):
@@ -185,6 +188,7 @@ class Config:
     tests_key: str = field(repr=False, default="")
     target_token: str = field(repr=False, default="")
     ledger_key: str = field(repr=False, default="")
+    verdict_pubkey: str = ""  # public half of the verdict key; empty: J1 does not check signatures
 
 
 @dataclass
@@ -231,6 +235,7 @@ def read_config(env: dict[str, str]) -> tuple[Config | None, str, int, int]:
         uv=env["CW_UV"], target_repo_id=int(env["CW_TARGET_REPO_ID"]),
         max_attempts=int(env["CW_MAX_ATTEMPTS"]), tests_key=secrets["CW_TESTS_KEY"],
         target_token=secrets["CW_TARGET_TOKEN"], ledger_key=secrets["CW_LEDGER_KEY"],
+        verdict_pubkey=env.get("CW_LEDGER_VERDICT_PUBKEY", "").strip(),
     )  # fmt: skip
     return cfg, head, run_id, attempt
 
@@ -240,6 +245,9 @@ def github_sources(cfg: Config) -> Sources:
         target_url=f"https://github.com/{cfg.target_repo}.git",
         tests_url=f"git@github.com:{cfg.tests_repo}.git",
     )
+
+
+WARN_NO_VERDICT_KEY = "warning: no verdict public key given; J1 does not check verdict signatures"
 
 
 def log(message: str) -> None:
@@ -717,6 +725,8 @@ def run(cfg: Config, src: Sources, ledger: Ledger | None) -> dict[str, Any]:
     if ledger is None:
         log("ledger: not configured")
         return jr.rejected(**ids, code="LEDGER_NOT_CONFIGURED")
+    if not cfg.verdict_pubkey:
+        log(WARN_NO_VERDICT_KEY)
     home = cfg.private / "home"
     home.mkdir(mode=0o700, exist_ok=True)
     git = jg.Git(home=home, env=ssh_env(cfg) if cfg.tests_key else {}, allow_file=src.allow_file)
