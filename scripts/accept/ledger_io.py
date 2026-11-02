@@ -14,8 +14,8 @@ J1 usage (prints one line of JSON with fixed values only; exit 0 go on, 2 stop, 
     python3 -I ledger_io.py j1-claim  (same) --pr N --run-id N --j1-attempt N
 
 The ledger URL comes from ``ACCEPT_LEDGER_URL`` (empty: LEDGER_NOT_CONFIGURED); the SSH key file
-from ``ACCEPT_LEDGER_SSH_KEY`` and known hosts from ``ACCEPT_LEDGER_KNOWN_HOSTS``. J2 passes a
-token instead (``token=``), sent as an HTTP header through git's environment, never in argv.
+from ``ACCEPT_LEDGER_SSH_KEY`` and known hosts from ``ACCEPT_LEDGER_KNOWN_HOSTS``. A token (``token=``) is sent as an HTTP header through git's environment, never in argv; J2 does
+not use it (it needs the verdict key).
 
 Verdict signatures: the ledger's ruleset does not restrict deploy-key pushes, so the ledger alone
 cannot show that a verdict tag came from J2. With ``sign=True`` (J2, which must also hold an
@@ -67,6 +67,7 @@ class GitLedger:
         if sign and ssh_key is None:
             raise ValueError("sign needs a key")
         self.url, self.target_repo_id, self._sign = url, target_repo_id, sign
+        self.skipped = 0  # refs the last successful read() skipped as unclassifiable
         self._dir = tempfile.mkdtemp(prefix="ledger-")  # 0700
         self._env = _git_env(self._dir, ssh_key, known_hosts, token)
         if sign:
@@ -108,6 +109,7 @@ class GitLedger:
             if self._sign:
                 records, unsigned = self._honour_signed(records)
             ledger = L.parse_ledger(config, records, self.target_repo_id)
+            self.skipped = len(ledger.skipped)
             return dataclasses.replace(ledger, unsigned=frozenset(unsigned))
         except (OSError, subprocess.SubprocessError, L.LedgerUnreadable, UnicodeError):
             return None
@@ -337,7 +339,7 @@ def main(argv: list[str]) -> int:
             n, code = j1_claim(io, *args, ids)  # type: ignore[arg-type]
     finally:
         io.close()
-    _emit({"code": code, "n": n})
+    _emit({"code": code, "n": n, "skipped": io.skipped})  # skipped: non-fatal count of odd ledger refs
     return 0 if code is None else 2
 
 

@@ -355,6 +355,17 @@ class JobState(unittest.TestCase):
 
 
 class J2Wiring(LocalLedger):
+    @classmethod
+    def setUpClass(cls):
+        cls._keys = tempfile.TemporaryDirectory()
+        path = os.path.join(cls._keys.name, "verdict-key")
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", path], check=True, capture_output=True)
+        cls.verdict_key = Path(path).read_text()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._keys.cleanup()
+
     def j1(self, run_id=100, sha=HEAD):
         io_ = IO.GitLedger(self.remote, REPO_ID)
         try:
@@ -369,7 +380,7 @@ class J2Wiring(LocalLedger):
             "ACCEPT_PR_ISSUE": "7", "ACCEPT_J1_JOB_RESULT": job, "ACCEPT_J1_RESULT": result,
             "ACCEPT_J1_JOB_NAME": "verify", "ACCEPT_LEDGER_URL": "https://github.com/org/ledger.git",
             "ACCEPT_CHECK_NAME": "cairnwork-accept", "ACCEPT_NOTE_CHECK_NAME": "cairnwork-accept-note",
-            "ACCEPT_APP_TOKEN": "dummy-app-token",
+            "ACCEPT_APP_TOKEN": "dummy-app-token", "ACCEPT_LEDGER_KEY": self.verdict_key,
         }  # fmt: skip
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -397,6 +408,27 @@ class J2Wiring(LocalLedger):
         self.assertEqual(printed["conclusion"], T.FAILURE)
         self.assertEqual([v.status for v in self.read().verdicts.values()], [L.ATTEMPT_LOST])
 
+    def test_odd_refs_are_skipped_and_counted_for_both_readers(self):
+        self.j1(run_id=100)
+        for prefix in ("bind", "claim", "verdict"):
+            git("update-ref", f"refs/tags/{prefix}/odd", "refs/heads/main", cwd=self.remote)
+        self.assertEqual(len(self.read().skipped), 3)  # J1's reader (no signature check)
+        self.assertEqual(len(self.read().claims), 1)
+        api = JobsApi((404, None))
+        result = self.ran("CORE_VERIFIED", "VERIFIED", True)
+        code, printed = self.j2(api, run_id=100, result=result)
+        self.assertEqual(printed["conclusion"], T.SUCCESS)  # J2's reader (signature check): still readable
+        self.assertIn("Ledger records skipped: 3.", api.checks[-1]["output"]["summary"])
+
+    def test_j1_result_carries_the_skipped_count(self):
+        git("update-ref", "refs/tags/claim/odd", "refs/heads/main", cwd=self.remote)
+        io_ = IO.GitLedger(self.remote, REPO_ID)
+        try:
+            self.assertIsNone(IO.j1_check(io_, HEAD, 7, BASE, 2))
+            self.assertEqual(io_.skipped, 1)
+        finally:
+            io_.close()
+
     def test_coarse_codes_follow_tests_consumed(self):
         # J2 trusts the tests_consumed flag; the two coarse codes are known values in the title
         self.j1(run_id=100)
@@ -419,11 +451,11 @@ class J2Wiring(LocalLedger):
         code, printed = self.j2(JobsApi((404, None)), run_id=300, result=result)
         self.assertEqual(printed, {"conclusion": T.FAILURE, "code": "TESTS_SETUP_PROBLEM"})
 
-    def ledger_tokens(self, extra):
+    def test_ledger_without_key_is_refused_not_read_with_a_token(self):
         seen, real = [], IO.GitLedger
 
         def recording(url, repo_id, **kw):
-            seen.append(kw.get("token"))
+            seen.append(kw)
             return real(url, repo_id, **kw)
 
         environ = {
@@ -432,16 +464,20 @@ class J2Wiring(LocalLedger):
             "ACCEPT_PR_ISSUE": "", "ACCEPT_J1_JOB_RESULT": "skipped", "ACCEPT_J1_RESULT": "",
             "ACCEPT_J1_JOB_NAME": "verify", "ACCEPT_LEDGER_URL": "https://github.com/org/ledger.git",
             "ACCEPT_CHECK_NAME": "cairnwork-accept", "ACCEPT_NOTE_CHECK_NAME": "cairnwork-accept-note",
-            "ACCEPT_APP_TOKEN": "target-app-token", **extra,
+            "ACCEPT_APP_TOKEN": "target-app-token", "ACCEPT_LEDGER_TOKEN": "tok",
         }  # fmt: skip
-        with mock.patch.object(R.IO, "GitLedger", recording), redirect_stdout(io.StringIO()):
-            self.assertEqual(R.main(environ, api=JobsApi((404, None)), ledger_url=self.remote), 0)
-        return seen
+        api, out = JobsApi((404, None)), io.StringIO()
+        with mock.patch.object(R.IO, "GitLedger", recording), redirect_stdout(out):
+            self.assertEqual(R.main(environ, api=api, ledger_url=self.remote), 0)
+        self.assertEqual(seen, [])  # no ledger handle at all: the token never reaches the ledger
+        self.assertEqual(json.loads(out.getvalue()), {"conclusion": T.FAILURE, "code": "LEDGER_KEY_MISSING"})
+        self.assertNotIn(T.SUCCESS, [c["conclusion"] for c in api.checks])
+        self.assertIn("LEDGER_KEY_MISSING", api.checks[-1]["output"]["title"])
 
-    def test_ledger_is_reached_with_the_ledger_token(self):
-        # the ledger App token has contents write on the ledger only; the target token is not used there
-        self.assertEqual(self.ledger_tokens({"ACCEPT_LEDGER_TOKEN": "ledger-app-token"}), ["ledger-app-token"])
-        self.assertEqual(self.ledger_tokens({}), ["target-app-token"])  # one App for both: same token
+    def test_no_ledger_url_is_still_not_configured(self):
+        check = R.run({"sha": HEAD, "run_id": 200, "j0_code": None, "pr_issue": None, "j1_job_success": False,
+                       "j1_text": "", "j1_job_name": "verify"}, JobsApi((404, None)), None)
+        self.assertEqual(check.code, "LEDGER_NOT_CONFIGURED")
 
     def key_run(self, extra, url="https://github.com/org/ledger.git"):
         """Run J2 with a recording GitLedger; return (kwargs seen, modes of the key files, files after)."""
@@ -477,15 +513,11 @@ class J2Wiring(LocalLedger):
         self.assertEqual(left, [])
         self.assertNotIn("SECRET-KEY-TEXT", printed)
 
-    def test_key_wins_over_the_token(self):
+    def test_key_path_never_uses_the_token(self):
         _, seen, _, _, _ = self.key_run({"ACCEPT_LEDGER_KEY": "k", "ACCEPT_LEDGER_TOKEN": "tok"})
         self.assertIsNone(seen[0].get("token"))
         self.assertTrue(seen[0]["ssh_key"])
         self.assertIs(seen[0].get("sign"), True)  # the key path signs and checks verdict signatures
-        _, seen, _, _, _ = self.key_run({"ACCEPT_LEDGER_TOKEN": "tok"})  # no key: the token path
-        self.assertEqual(seen[0].get("token"), "tok")
-        self.assertNotIn("ssh_key", seen[0])
-        self.assertFalse(seen[0].get("sign", False))  # the token path cannot sign
 
     def test_ssh_url_accepted_other_hosts_refused(self):
         key = {"ACCEPT_LEDGER_KEY": "k"}

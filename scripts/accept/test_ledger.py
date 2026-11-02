@@ -69,32 +69,70 @@ class StrictReading(unittest.TestCase):
         self.assertUnreadable(config='{"v":1,"target_repo_id":7,"x":1}\n')
         self.assertUnreadable(config="not json")
 
+    def assertSkipped(self, *refs, skipped=1):
+        """The odd record is skipped and counted; the read itself does not raise."""
+        led = L.parse_ledger(CONFIG, list(refs), TARGET)
+        self.assertEqual(len(led.skipped), skipped, led.skipped)
+        return led
+
     def test_entry_of_another_target(self):
         name, kind, msg = bind()
-        self.assertUnreadable((name, kind, msg.replace('"target_repo_id":7', '"target_repo_id":8')))
+        self.assertSkipped((name, kind, msg.replace('"target_repo_id":7', '"target_repo_id":8')))
 
     def test_shapes(self):
         name, kind, msg = bind()
-        self.assertUnreadable((name, "tag", msg))  # annotated tag object
-        self.assertUnreadable((name, kind, msg.rstrip("\n")))
-        self.assertUnreadable((name, kind, msg.replace('"issue":5', '"issue":true')))
-        self.assertUnreadable((name, kind, msg.replace('"issue":5', '"issue":5,"issue":6')))
-        self.assertUnreadable((name, kind, msg.replace('"issue":5', '"issue":5.0')))
-        self.assertUnreadable((name, kind, msg.replace('"pr":3', '"pr":3,"extra":1')))
-        self.assertUnreadable((f"refs/tags/bind/{SHA2}", kind, msg))  # name and content differ
+        self.assertSkipped((name, "tag", msg))  # annotated tag object
+        self.assertSkipped((name, kind, msg.rstrip("\n")))
+        self.assertSkipped((name, kind, msg.replace('"issue":5', '"issue":true')))
+        self.assertSkipped((name, kind, msg.replace('"issue":5', '"issue":5,"issue":6')))
+        self.assertSkipped((name, kind, msg.replace('"issue":5', '"issue":5.0')))
+        self.assertSkipped((name, kind, msg.replace('"pr":3', '"pr":3,"extra":1')))
+        self.assertSkipped((f"refs/tags/bind/{SHA2}", kind, msg))  # name and content differ
         cname_, ckind_, cmsg_ = bind(sha="c" * 40)
-        self.assertUnreadable((cname_.replace("c" * 40, "C" * 40), ckind_, cmsg_))
-        self.assertUnreadable(("refs/tags/bind/xyz", kind, msg))
+        self.assertSkipped((cname_.replace("c" * 40, "C" * 40), ckind_, cmsg_))
+        self.assertSkipped(("refs/tags/bind/xyz", kind, msg))
         cname, ckind, cmsg = claim(1)
-        self.assertUnreadable((f"refs/tags/claim/{VER}/01", ckind, cmsg))
-        self.assertUnreadable((f"refs/tags/claim/{VER}/2", ckind, cmsg))
-        self.assertUnreadable((name, kind, msg.replace('"v":1', '"v":2')))
+        self.assertSkipped((f"refs/tags/claim/{VER}/01", ckind, cmsg))
+        self.assertSkipped((f"refs/tags/claim/{VER}/2", ckind, cmsg))
+        self.assertSkipped((name, kind, msg.replace('"v":1', '"v":2')))
+
+    def test_odd_ref_under_each_prefix_leaves_the_rest_readable(self):
+        led = self.assertSkipped(bind(), claim(1), verdict(1), ("refs/tags/bind/odd", "commit", "x\n"),
+                                 ("refs/tags/claim/odd", "commit", "x\n"),
+                                 ("refs/tags/verdict/odd", "commit", "x\n"), skipped=3)
+        self.assertEqual((len(led.binds), len(led.claims), len(led.verdicts)), (1, 1, 1))
+        self.assertEqual({r for _, r in led.skipped}, {"ref_name"})
 
     def test_verdict_needs_its_claim_of_the_same_sha(self):
-        self.assertUnreadable(verdict(1))
-        self.assertUnreadable(claim(1), verdict(1, sha=SHA2))
+        led = self.assertSkipped(verdict(1))  # a verdict with no claim: skipped, not fatal
+        self.assertEqual((led.verdicts, led.skipped[0][1], len(led.stranded)), ({}, "no_claim", 1))
+        led = self.assertSkipped(claim(1), verdict(1, sha=SHA2))
+        self.assertEqual((len(led.claims), led.verdicts), (1, {}))
         vname, vkind, vmsg = verdict(1)
-        self.assertUnreadable(claim(1), (vname, vkind, vmsg.replace('"VERIFIED"', '"MAYBE"')))
+        self.assertSkipped(claim(1), (vname, vkind, vmsg.replace('"VERIFIED"', '"MAYBE"')))
+
+    def stranded_cases(self):
+        failed = verdict(1, "FAILED", code="TESTS_FAILED")
+        odd = (f"refs/tags/claim/{SHA1}/01", "commit", "x\n")  # the claim ref made unclassifiable
+        broken = (claim(1)[0], "commit", claim(1)[2].replace('"v":1', '"v":2'))
+        return (ledger(bind(), odd, failed), ledger(bind(), broken, failed),
+                ledger(bind(), failed))  # last: the claim deleted
+
+    def test_lost_claim_does_not_erase_a_failure_or_an_attempt(self):
+        for led in self.stranded_cases():
+            self.assertEqual(L.used(led, VER), 1)  # an attempt stays used
+            self.assertEqual(L.j1_gate(led, SHA1, 5, VER, 1).code, L.LEDGER_VERDICT_STRANDED)
+            self.assertIsNone(L.j1_claim_number(led, VER, 1))
+            check = T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1(), written={})
+            self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.LEDGER_VERDICT_STRANDED))
+
+    def test_stranded_verdict_is_not_a_pass(self):
+        led = ledger(bind(), verdict(1))  # VERIFIED verdict, no claim
+        check = T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1(), written={})
+        self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.LEDGER_VERDICT_STRANDED))
+
+    def test_clean_ledger_skips_nothing(self):
+        self.assertEqual(ledger(bind(), claim(1), verdict(1)).skipped, ())
 
 
 class Counting(unittest.TestCase):
