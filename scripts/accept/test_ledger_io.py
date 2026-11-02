@@ -438,6 +438,17 @@ class J1ChecksSignatures(SignedVerdicts):
         self.assertEqual(IO.j1_check(self.reader(key), SHA1, 5, VER, 1), L.LEDGER_VERDICT_STRANDED)
         self.assertEqual(self.j1(io=self.reader(key), run_id=102), (None, L.LEDGER_VERDICT_STRANDED))
 
+    def test_unsigned_not_consumed_verdict_does_not_free_the_attempt(self):
+        key = self.keygen("k1")
+        self.claimed()
+        msg = self.verdict_msg().replace("VERIFIED", "NOT_CONSUMED").replace("CORE_NOT_CONSUMED", "BAD_SCOPE")
+        msg = msg.replace('"code":"CORE_VERIFIED"', '"code":"BAD_SCOPE"')
+        self.assertTrue(self.io().create(f"refs/tags/verdict/{VER}/1", msg))
+        self.assertEqual(L.used(self.read(), VER), 0)  # no key: as on main, the returned attempt is free
+        checked = self.reader(key).read()
+        self.assertEqual(checked.unsigned, frozenset({(VER, 1)}))
+        self.assertEqual(L.used(checked, VER), 1)  # the claim stays unjudged and counts
+
     def test_signed_verdict_still_prior_verdict_and_other_key_is_stranded(self):
         key = self.keygen("k1")
         self.claimed()
