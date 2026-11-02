@@ -19,13 +19,14 @@ name: Cairnwork accept
 #
 # Who holds what (design v2.2 section 2): J0 has no environment and no secret, only a read-only
 # token, and reads API metadata of the PR. J1 (environment cairnwork-verify: tests key, ledger
-# claim key, and only whether the verdict key exists, as the flag CW_HAS_VERDICT_KEY; the caller
-# therefore keeps LEDGER_VERDICT_KEY where both environments read it, or in both) is scheduled
-# only when J0 let the PR through; a PR from another account comes from a
+# claim key) is scheduled only when J0 let the PR through; a PR from another account comes from a
 # fork and J0 stops it. J2 (environment cairnwork-report: the report App key and the ledger verdict
 # deploy key) never runs PR code; it reads and writes the ledger itself over SSH with the verdict
 # key and creates the required check with the App's token. The report App needs checks write,
 # actions read, contents read and metadata; no App permission grows for the ledger.
+# A small key-check job in J2's environment, between J0 and J1, runs no PR code and tells J1 only
+# whether the verdict key exists (CW_HAS_VERDICT_KEY, true/false), so J1 claims no attempt that J2
+# could not judge (#35); the key itself is never named in J1's job.
 #
 # Verdict tags are signed by the verdict key (J2 signs every verdict commit) and J2 honours only
 # verdicts whose signature verifies against that key; an unsigned or other-key verdict reads as no
@@ -134,12 +135,33 @@ jobs:
           ACCEPT_TARGET_BRANCH: ${{ inputs.target-branch }}
         run: /usr/bin/python3 -I .cw-accept/scripts/accept/j0_gate.py
 
+  key-check:
+    # J2's environment, so the verdict key is read where it already lives; no checkout, no PR code.
+    # Says only whether the key exists, so J1 can stop early (LEDGER_KEY_MISSING at J1, #35)
+    # without the key ever being named in its job. A required reviewer on cairnwork-report would
+    # now be asked before J1 instead of before J2.
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    environment: cairnwork-report
+    permissions:
+      contents: read
+    outputs:
+      has-verdict-key: ${{ steps.key.outputs.has-verdict-key }}
+    steps:
+      - name: Whether the verdict key exists (true or false; the key itself stays here)
+        id: key
+        env:
+          HAS: ${{ secrets.LEDGER_VERDICT_KEY != '' }}
+        run: printf 'has-verdict-key=%s\n' "$HAS" >> "$GITHUB_OUTPUT"
+
   verify:
     # J1. Every value from J0 reaches the scripts through env and is format-checked there; nothing
     # is expanded into a run: line. From the first contact with the tests repository on, all
     # output goes to owner-only files under CW_PRIVATE; the only public output is the checked
     # result line of the last step.
-    needs: gate
+    needs: [gate, key-check]
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 75
@@ -198,10 +220,8 @@ jobs:
           CW_MIN_PROTECTION: ${{ inputs.min-protection }}  # enforced by J2 at the reader
           CW_TESTS_KEY: ${{ secrets.TESTS_KEY }}
           CW_LEDGER_KEY: ${{ secrets.LEDGER_KEY }}
-          # Only whether J2 will hold the verdict key (true/false), never the key itself: with
-          # false J1 claims no attempt (LEDGER_KEY_MISSING at J1, verify-action#35). Evaluated
-          # in this job's environment, so the key must be visible to cairnwork-verify too.
-          CW_HAS_VERDICT_KEY: ${{ secrets.LEDGER_VERDICT_KEY != '' }}
+          # true/false from the key-check job: with false J1 claims no attempt (#35)
+          CW_HAS_VERDICT_KEY: ${{ needs.key-check.outputs.has-verdict-key }}
           CW_TARGET_TOKEN: ${{ github.token }}
         run: |
           umask 077

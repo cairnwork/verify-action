@@ -653,8 +653,8 @@ class Workflow(unittest.TestCase):
         self.assertNotIn("ledger-verdict-pubkey", self.jobs["report"])
         self.assertIn("ACCEPT_MAX_ATTEMPTS: ${{ inputs.max-attempts }}", self.jobs["report"])
 
-    def test_three_jobs(self):
-        self.assertEqual(list(self.jobs), ["gate", "verify", "report"])
+    def test_four_jobs(self):
+        self.assertEqual(list(self.jobs), ["gate", "key-check", "verify", "report"])
 
     def test_gate_holds_nothing(self):
         gate = self.jobs["gate"]
@@ -665,17 +665,26 @@ class Workflow(unittest.TestCase):
 
     def test_verify_runs_only_after_the_gate_let_it_through(self):
         verify = self.jobs["verify"]
-        self.assertRegex(verify, r"(?m)^    needs: gate$")
+        self.assertRegex(verify, r"(?m)^    needs: \[gate, key-check\]$")
         self.assertRegex(verify, r"(?m)^    if: needs\.gate\.outputs\.run == 'true'$")
         self.assertRegex(verify, r"(?m)^    environment: cairnwork-verify$")
-        self.assertEqual(sorted(set(re.findall(r"secrets\.([A-Z_]+)", verify))),
-                         ["LEDGER_KEY", "LEDGER_VERDICT_KEY", "TESTS_KEY"])
+        self.assertEqual(sorted(set(re.findall(r"secrets\.([A-Z_]+)", verify))), ["LEDGER_KEY", "TESTS_KEY"])
 
-    def test_j1_gets_only_whether_the_verdict_key_exists(self):
-        """J1 learns true/false (verify-action#35), never the verdict key text; J2 keeps the key."""
+    def test_j1_learns_only_whether_the_verdict_key_exists(self):
+        """The key-check job, in J2's environment and running no PR code, answers true/false; J1
+        reads that answer and never names the verdict key (verify-action#35)."""
+        key = self.jobs["key-check"]
+        self.assertRegex(key, r"(?m)^    needs: gate$")
+        self.assertRegex(key, r"(?m)^    if: needs\.gate\.outputs\.run == 'true'$")
+        self.assertRegex(key, r"(?m)^    environment: cairnwork-report$")
+        self.assertEqual(re.findall(r"secrets\.([A-Z_]+)", key), ["LEDGER_VERDICT_KEY"])
+        self.assertIn("HAS: ${{ secrets.LEDGER_VERDICT_KEY != '' }}", key)
+        self.assertNotIn("actions/checkout", key)
+        self.assertNotIn("j1_verify", key)
+        self.assertIn("has-verdict-key: ${{ steps.key.outputs.has-verdict-key }}", key)
         verify = self.jobs["verify"]
-        uses = re.findall(r"^.*secrets\.LEDGER_VERDICT_KEY.*$", verify, flags=re.M)
-        self.assertEqual(uses, ["          CW_HAS_VERDICT_KEY: ${{ secrets.LEDGER_VERDICT_KEY != '' }}"])
+        self.assertIn("CW_HAS_VERDICT_KEY: ${{ needs.key-check.outputs.has-verdict-key }}", verify)
+        self.assertNotIn("LEDGER_VERDICT_KEY", verify)
         self.assertNotIn("CW_HAS_VERDICT_KEY", self.jobs["gate"])
         self.assertNotIn("CW_HAS_VERDICT_KEY", self.jobs["report"])
         self.assertIn("ACCEPT_LEDGER_KEY: ${{ secrets.LEDGER_VERDICT_KEY }}", self.jobs["report"])
