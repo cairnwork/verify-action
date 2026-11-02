@@ -668,7 +668,17 @@ class Workflow(unittest.TestCase):
         self.assertRegex(verify, r"(?m)^    needs: gate$")
         self.assertRegex(verify, r"(?m)^    if: needs\.gate\.outputs\.run == 'true'$")
         self.assertRegex(verify, r"(?m)^    environment: cairnwork-verify$")
-        self.assertEqual(sorted(set(re.findall(r"secrets\.([A-Z_]+)", verify))), ["LEDGER_KEY", "TESTS_KEY"])
+        self.assertEqual(sorted(set(re.findall(r"secrets\.([A-Z_]+)", verify))),
+                         ["LEDGER_KEY", "LEDGER_VERDICT_KEY", "TESTS_KEY"])
+
+    def test_j1_gets_only_whether_the_verdict_key_exists(self):
+        """J1 learns true/false (verify-action#35), never the verdict key text; J2 keeps the key."""
+        verify = self.jobs["verify"]
+        uses = re.findall(r"^.*secrets\.LEDGER_VERDICT_KEY.*$", verify, flags=re.M)
+        self.assertEqual(uses, ["          CW_HAS_VERDICT_KEY: ${{ secrets.LEDGER_VERDICT_KEY != '' }}"])
+        self.assertNotIn("CW_HAS_VERDICT_KEY", self.jobs["gate"])
+        self.assertNotIn("CW_HAS_VERDICT_KEY", self.jobs["report"])
+        self.assertIn("ACCEPT_LEDGER_KEY: ${{ secrets.LEDGER_VERDICT_KEY }}", self.jobs["report"])
 
     def test_report_holds_the_app_key_and_runs_no_pr_code(self):
         report = self.jobs["report"]

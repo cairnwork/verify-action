@@ -19,7 +19,9 @@ name: Cairnwork accept
 #
 # Who holds what (design v2.2 section 2): J0 has no environment and no secret, only a read-only
 # token, and reads API metadata of the PR. J1 (environment cairnwork-verify: tests key, ledger
-# claim key) is scheduled only when J0 let the PR through; a PR from another account comes from a
+# claim key, and only whether the verdict key exists, as the flag CW_HAS_VERDICT_KEY; the caller
+# therefore keeps LEDGER_VERDICT_KEY where both environments read it, or in both) is scheduled
+# only when J0 let the PR through; a PR from another account comes from a
 # fork and J0 stops it. J2 (environment cairnwork-report: the report App key and the ledger verdict
 # deploy key) never runs PR code; it reads and writes the ledger itself over SSH with the verdict
 # key and creates the required check with the App's token. The report App needs checks write,
@@ -196,6 +198,10 @@ jobs:
           CW_MIN_PROTECTION: ${{ inputs.min-protection }}  # enforced by J2 at the reader
           CW_TESTS_KEY: ${{ secrets.TESTS_KEY }}
           CW_LEDGER_KEY: ${{ secrets.LEDGER_KEY }}
+          # Only whether J2 will hold the verdict key (true/false), never the key itself: with
+          # false J1 claims no attempt (LEDGER_KEY_MISSING at J1, verify-action#35). Evaluated
+          # in this job's environment, so the key must be visible to cairnwork-verify too.
+          CW_HAS_VERDICT_KEY: ${{ secrets.LEDGER_VERDICT_KEY != '' }}
           CW_TARGET_TOKEN: ${{ github.token }}
         run: |
           umask 077
