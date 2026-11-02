@@ -370,8 +370,9 @@ class J2Env(unittest.TestCase):
                 "ACCEPT_LEDGER_URL": "https://github.com/o/ledger.git", "ACCEPT_CHECK_NAME": "cairnwork-accept",
                 "ACCEPT_NOTE_CHECK_NAME": "cairnwork-accept-note", "ACCEPT_APP_TOKEN": "t"}  # fmt: skip
         self.assertIsNotNone(R.read_env(good))
+        self.assertIsNotNone(R.read_env({**good, "ACCEPT_LEDGER_URL": "git@github.com:o/l.git"}))
         for key, value in (("ACCEPT_SHA", SHA1[:39]), ("ACCEPT_J0_CODE", "::error"), ("ACCEPT_TARGET_REPO", "o/r/x"),
-                           ("ACCEPT_LEDGER_URL", "git@github.com:o/l.git"), ("ACCEPT_PR_ISSUE", "0"),
+                           ("ACCEPT_LEDGER_URL", "git@example.com:o/l.git"), ("ACCEPT_PR_ISSUE", "0"),
                            ("ACCEPT_APP_TOKEN", ""), ("ACCEPT_CHECK_NAME", "a\nb")):
             self.assertIsNone(R.read_env({**good, key: value}), key)
 

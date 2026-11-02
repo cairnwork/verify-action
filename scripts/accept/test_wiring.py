@@ -443,6 +443,57 @@ class J2Wiring(LocalLedger):
         self.assertEqual(self.ledger_tokens({"ACCEPT_LEDGER_TOKEN": "ledger-app-token"}), ["ledger-app-token"])
         self.assertEqual(self.ledger_tokens({}), ["target-app-token"])  # one App for both: same token
 
+    def key_run(self, extra, url="https://github.com/org/ledger.git"):
+        """Run J2 with a recording GitLedger; return (kwargs seen, modes of the key files, files after)."""
+        seen, modes, real = [], {}, IO.GitLedger
+
+        def recording(u, repo_id, **kw):
+            seen.append(kw)
+            for name in ("ssh_key", "known_hosts"):
+                if kw.get(name):
+                    modes[name] = (os.stat(kw[name]).st_mode & 0o777, Path(kw[name]).read_text())
+            return real(u, repo_id, **{k: v for k, v in kw.items() if k == "token"})
+
+        environ = {
+            "ACCEPT_TARGET_REPO": "org/target", "ACCEPT_TARGET_REPO_ID": str(REPO_ID),
+            "ACCEPT_SHA": HEAD, "ACCEPT_RUN_ID": "200", "ACCEPT_J0_CODE": "NO_TASK",
+            "ACCEPT_PR_ISSUE": "", "ACCEPT_J1_JOB_RESULT": "skipped", "ACCEPT_J1_RESULT": "",
+            "ACCEPT_J1_JOB_NAME": "verify", "ACCEPT_LEDGER_URL": url,
+            "ACCEPT_CHECK_NAME": "cairnwork-accept", "ACCEPT_NOTE_CHECK_NAME": "cairnwork-accept-note",
+            "ACCEPT_APP_TOKEN": "target-app-token", **extra,
+        }  # fmt: skip
+        out = io.StringIO()
+        with mock.patch.object(R.IO, "GitLedger", recording), redirect_stdout(out):
+            code = R.main(environ, api=JobsApi((404, None)), ledger_url=self.remote)
+        left = [kw[n] for kw in seen for n in ("ssh_key", "known_hosts") if kw.get(n) and os.path.exists(kw[n])]
+        return code, seen, modes, left, out.getvalue()
+
+    def test_key_builds_an_ssh_ledger_and_removes_the_files(self):
+        code, seen, modes, left, printed = self.key_run({"ACCEPT_LEDGER_KEY": "SECRET-KEY-TEXT"})
+        self.assertEqual(code, 0)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(modes["ssh_key"], (0o600, "SECRET-KEY-TEXT\n"))
+        self.assertEqual(modes["known_hosts"], (0o600, jv.jg.GITHUB_KNOWN_HOSTS))
+        self.assertEqual(left, [])
+        self.assertNotIn("SECRET-KEY-TEXT", printed)
+
+    def test_key_wins_over_the_token(self):
+        _, seen, _, _, _ = self.key_run({"ACCEPT_LEDGER_KEY": "k", "ACCEPT_LEDGER_TOKEN": "tok"})
+        self.assertIsNone(seen[0].get("token"))
+        self.assertTrue(seen[0]["ssh_key"])
+        _, seen, _, _, _ = self.key_run({"ACCEPT_LEDGER_TOKEN": "tok"})  # no key: the token path
+        self.assertEqual(seen[0].get("token"), "tok")
+        self.assertNotIn("ssh_key", seen[0])
+
+    def test_ssh_url_accepted_other_hosts_refused(self):
+        key = {"ACCEPT_LEDGER_KEY": "k"}
+        self.assertEqual(self.key_run(key, "git@github.com:org/ledger.git")[0], 0)
+        for bad in ("git@example.com:org/ledger.git", "https://example.com/org/ledger.git",
+                    "ssh://git@github.com/org/ledger.git"):
+            code, seen, _, _, printed = self.key_run(key, bad)
+            self.assertEqual((code, seen), (1, []))
+            self.assertIn("ARGS_INVALID", printed)
+
     def test_app_token_is_required(self):
         environ = {"ACCEPT_APP_TOKEN": ""}
         with redirect_stdout(io.StringIO()):
@@ -484,13 +535,15 @@ class Workflow(unittest.TestCase):
     def test_report_holds_the_app_key_and_runs_no_pr_code(self):
         report = self.jobs["report"]
         self.assertRegex(report, r"(?m)^    environment: cairnwork-report$")
-        self.assertEqual(sorted(set(re.findall(r"secrets\.([A-Z_]+)", report))), ["REPORT_APP_KEY"])
+        self.assertEqual(sorted(set(re.findall(r"secrets\.([A-Z_]+)", report))),
+                         ["LEDGER_VERDICT_KEY", "REPORT_APP_KEY"])
+        self.assertNotIn("permission-contents", report)
         self.assertNotIn("github.event.pull_request", report)
         self.assertNotIn("j1_verify", report)
 
     def test_secrets_only_in_their_jobs(self):
         self.assertEqual(set(re.findall(r"secrets\.([A-Z_]+)", self.text)),
-                         {"TESTS_KEY", "LEDGER_KEY", "REPORT_APP_KEY"})  # fmt: skip
+                         {"TESTS_KEY", "LEDGER_KEY", "LEDGER_VERDICT_KEY", "REPORT_APP_KEY"})  # fmt: skip
 
     def code_lines(self):
         return [line for line in self.text.splitlines() if not line.lstrip().startswith("#")]
