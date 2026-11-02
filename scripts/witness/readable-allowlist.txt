@@ -291,6 +291,7 @@
 /var/lib/xkb
 /var/lib/xml-core
 /var/log/alternatives.log
+/var/log/alternatives.log.1
 /var/log/apt
 /var/log/dpkg.log
 /var/log/fontconfig.log
