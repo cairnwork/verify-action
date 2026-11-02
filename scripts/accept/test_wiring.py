@@ -481,9 +481,11 @@ class J2Wiring(LocalLedger):
         _, seen, _, _, _ = self.key_run({"ACCEPT_LEDGER_KEY": "k", "ACCEPT_LEDGER_TOKEN": "tok"})
         self.assertIsNone(seen[0].get("token"))
         self.assertTrue(seen[0]["ssh_key"])
+        self.assertIs(seen[0].get("sign"), True)  # the key path signs and checks verdict signatures
         _, seen, _, _, _ = self.key_run({"ACCEPT_LEDGER_TOKEN": "tok"})  # no key: the token path
         self.assertEqual(seen[0].get("token"), "tok")
         self.assertNotIn("ssh_key", seen[0])
+        self.assertFalse(seen[0].get("sign", False))  # the token path cannot sign
 
     def test_ssh_url_accepted_other_hosts_refused(self):
         key = {"ACCEPT_LEDGER_KEY": "k"}
