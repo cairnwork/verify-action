@@ -25,6 +25,7 @@ REQUIRED_FORBIDDEN = ("home", "runner_temp", "runner_root", "workspace")
 PRIVILEGED_GROUPS = ("adm", "docker", "sudo")
 PERSIST_KEYS = ("processes", "cairnwork_count", "marked_processes", "crontab", "owned_files",
                 "at_jobs", "linger")
+ERROR_CLASSES = ("timeout", "no-json")
 NO_CAPS = "0000000000000000"
 
 
@@ -87,8 +88,9 @@ def judge(case: dict, lists: dict, account_uid: int) -> Verdicts:
     runner, sandbox, account = case["runner"], case["sandbox"], case["account"]
     for label, report in (("runner", runner), ("sandbox", sandbox), ("account", account)):
         if "error" in report:
-            v.add(f"probe-{label}", False, None, f"error={report['error']} "
-                  f"{report.get('stderr_tail', '')}")
+            # Fixed text and a class from a closed set; nothing the probe printed reaches the log.
+            kind = report["error"] if report["error"] in ERROR_CLASSES else "other"
+            v.add(f"probe-{label}", False, None, f"probe failed error_class={kind}")
     if v.failed:
         return v
     _confinement(v, runner, sandbox, account_uid)

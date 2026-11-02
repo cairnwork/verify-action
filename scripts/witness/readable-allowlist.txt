@@ -2,6 +2,8 @@
 # the system trees probe.SYSTEM_TREES skips. Every entry is one exact category measured on
 # GitHub-hosted ubuntu-24.04 (two runs, identical sets); nothing broader is listed, so a category
 # not seen before fails the readable-files witness until someone reviews it and adds it here.
+# Entries are categories (two path parts, three under /var, /home and /run), so an entry also
+# admits everything below it; the broad ones carry a reason below.
 # A category matches an entry when it equals it or lies under it; for /var, /home and /run a
 # category has three path parts, elsewhere two.
 
@@ -28,6 +30,7 @@
 /etc/ca-certificates.conf
 /etc/ca-certificates.conf.dpkg-old
 /etc/chrony
+# Cloud provisioning settings: image-defined, no job data; reviewed as part of the image.
 /etc/cloud
 /etc/cni
 /etc/console-setup
@@ -195,6 +198,7 @@
 /etc/usb_modeswitch.conf
 /etc/vim
 /etc/vmware-tools
+# Cloud agent settings: image-defined, no job data.
 /etc/waagent.conf
 /etc/wgetrc
 /etc/xattr.conf
@@ -202,7 +206,8 @@
 /etc/xml
 /etc/zsh_command_not_found
 
-# Homebrew's shared prefix (the runner's own home is not readable).
+# Homebrew's shared prefix (the runner's own home is not readable). Package-manager tree: public
+# packages and their metadata, installed by the image build; no per-job data.
 /home/linuxbrew/.linuxbrew
 
 # Image build reports and helpers.
@@ -216,6 +221,9 @@
 
 # Image tool trees. The tool cache is readable here and not writable inside the sandbox
 # (the tool cache witness checks that).
+# Runner caches (image-prepared action archives, tool cache, runner cache): public downloads
+# placed at image build time, so a canary can only land here by a job writing it, which the
+# canary search and the tool cache write check cover.
 /opt/actionarchivecache
 /opt/az
 /opt/google
@@ -231,6 +239,9 @@
 /run/systemd/resolve
 
 # Package state, caches, logs. /var/lib/cairnwork is this witness's own staged probe.
+# /var/lib/cloud is cloud provisioning state (image-defined, reviewed as such) and
+# /var/log/waagent.log is the cloud agent's log (image-level events, no job data); both are
+# listed because they are world-readable here, not because they are needed.
 /var/.updated
 /var/backups/alternatives.tar.0
 /var/backups/alternatives.tar.1.gz

@@ -67,8 +67,8 @@ def probe_run(label: str, argv: list, state: Path) -> dict:
     try:
         report = json.loads(done.stdout)
     except ValueError:
-        tail = [line for line in done.stderr.splitlines() if line.strip()][-5:]
-        return {"error": f"no-json rc={done.returncode}", "stderr_tail": tail}
+        # Details stay in the state dir's .stderr file; the judge prints a fixed code only.
+        return {"error": "no-json"}
     (state / f"{label}.json").write_text(json.dumps(report, indent=1, sort_keys=True))
     return report
 
