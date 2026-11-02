@@ -1,0 +1,29 @@
+name: Accept unit tests
+
+on:
+  push:
+    paths:
+      - 'scripts/accept/**'
+      - '.github/workflows/accept-unit.yml'
+  pull_request:
+    paths:
+      - 'scripts/accept/**'
+      - '.github/workflows/accept-unit.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout verify-action
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Result redaction tests (stdlib only)
+        run: |
+          python3 --version
+          python3 -I -m unittest discover -s scripts/accept -p 'test_*.py' -v
