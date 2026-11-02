@@ -64,10 +64,16 @@ sudo -n sh "$src/scripts/setup_verifier_user_linux.sh" "$USER"
 
 umask 027
 uv venv --quiet --python /usr/bin/python3 "$ROOT/venv"
+# copy, not link: the cache lives in CW_PRIVATE (owner only), and a link or a mode-keeping copy
+# would leave the account unable to read pytest; the group bits are then set explicitly
 uv pip install --python "$ROOT/venv/bin/python" --require-hashes --only-binary :all: --no-deps \
-  -r "$HERE/verifier-requirements.txt"
-"$ROOT/venv/bin/python" -I -c "import pytest"
+  --link-mode copy -r "$HERE/verifier-requirements.txt"
+chmod -R u+rwX,g+rX,g-w,o-rwx "$ROOT/venv"
 umask 077
+# Cairnwork's own usability check: a confined run as the account imports pytest
+"$src/.venv/bin/python" -I -c 'import sys
+from cairnwork.verifier_account import VerifierAccount
+sys.exit(0 if VerifierAccount().available(sys.argv[1]) else 1)' "$ROOT/venv/bin/python"
 
 gid="$(getent group cairnwork | cut -d: -f3)"
 sudo -n mount -t tmpfs -o "size=4g,mode=2750,uid=$(id -u),gid=$gid,nosuid,nodev" tmpfs "$ROOT/runs"
