@@ -302,6 +302,12 @@ class J1KeyOrder(unittest.TestCase):
                 self.run_j1(OrderLedger([]))
             self.assertEqual(any(c.args == (jv.WARN_NO_VERDICT_KEY,) for c in log.call_args_list), warned)
 
+    def test_malformed_pubkey_logs_its_reason(self):
+        self.cfg.verdict_pubkey = "not a key"
+        with mock.patch.object(jv, "log") as log:
+            self.run_j1(OrderLedger([]))
+        self.assertIn(mock.call(jv.BAD_VERDICT_KEY), log.call_args_list)
+
     def test_pubkey_comes_from_env_and_reaches_the_ledger_reader(self):
         cfg = jv.Config(head=HEAD, base=BASE, issue=7, pr=5, author="a", target_repo="o/t", target_branch="main",
                         tests_repo="o/tests", ledger_repo="o/ledger", run_id=1, run_attempt=1, private=Path(self.tmp.name),

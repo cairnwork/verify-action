@@ -250,6 +250,9 @@ def github_sources(cfg: Config) -> Sources:
 WARN_NO_VERDICT_KEY = "warning: no verdict public key given; J1 does not check verdict signatures"
 
 
+BAD_VERDICT_KEY = "ledger: the verdict public key input is not an OpenSSH public key"
+
+
 def log(message: str) -> None:
     """To the private log only (fd 2 is that file from step 1 on)."""
     print(f"[j1 {time.strftime('%H:%M:%S')}] {message}", file=sys.stderr, flush=True)
@@ -727,6 +730,8 @@ def run(cfg: Config, src: Sources, ledger: Ledger | None) -> dict[str, Any]:
         return jr.rejected(**ids, code="LEDGER_NOT_CONFIGURED")
     if not cfg.verdict_pubkey:
         log(WARN_NO_VERDICT_KEY)
+    elif not lio._PUBKEY.match(cfg.verdict_pubkey):
+        log(BAD_VERDICT_KEY)  # the ledger reader refuses it too: LEDGER_UNAVAILABLE, with this reason
     home = cfg.private / "home"
     home.mkdir(mode=0o700, exist_ok=True)
     git = jg.Git(home=home, env=ssh_env(cfg) if cfg.tests_key else {}, allow_file=src.allow_file)

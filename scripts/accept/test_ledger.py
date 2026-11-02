@@ -282,6 +282,13 @@ class BudgetAtJ2(unittest.TestCase):
         led = ledger(claim(1, sha=SHA2, k=4), claim(2), verdict(2))  # claim 1 unjudged, still an attempt
         self.assertEqual(self.check(led, sha=SHA1).code, L.ATTEMPTS_EXHAUSTED)
 
+    def test_own_returned_claim_does_not_make_room(self):
+        led = ledger(claim(1, k=4), verdict(1, "NOT_CONSUMED", k=5, code="BAD_SCOPE"),
+                     claim(2, sha=SHA2, k=6), verdict(2, "FAILED", sha=SHA2, k=7),
+                     claim(3, k=8), verdict(3, k=9))
+        check = self.check(led, sha=SHA1)
+        self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.ATTEMPTS_EXHAUSTED))
+
     def test_returned_attempt_is_not_spent(self):
         led = ledger(claim(1, sha=SHA2, k=4), verdict(1, "NOT_CONSUMED", sha=SHA2, k=5, code="BAD_SCOPE"), claim(2), verdict(2))
         self.assertEqual(self.check(led, sha=SHA1).conclusion, T.SUCCESS)
