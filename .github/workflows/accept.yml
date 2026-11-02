@@ -1,11 +1,27 @@
 name: Cairnwork accept
 
 # Reusable PR acceptance workflow (design v2.2): J0 gate -> J1 verify -> J2 report. A caller on the
-# target repository's default branch runs it on pull_request_target and pins it by commit.
+# target repository's default branch runs it on pull_request_target and pins it by commit:
 #
-# Status: J1 only (step S2b). The gate below is a placeholder that lets nothing through until S2a
-# adds J0, and J1 refuses to run any candidate until S3 adds the ledger (LEDGER_NOT_CONFIGURED).
-# So no commit of this file runs a candidate without a ledger.
+#   on:
+#     pull_request_target:
+#       types: [opened, synchronize, reopened, ready_for_review]
+#   concurrency:
+#     group: cairnwork-accept-${{ github.event.pull_request.number }}
+#     cancel-in-progress: false
+#   jobs:
+#     accept:
+#       uses: cairnwork/verify-action/.github/workflows/accept.yml@<40-hex>
+#       with: {tests-repo: ..., ledger-repo: ..., verify-action-sha: <same 40-hex>,
+#              target-branch: main, max-attempts: 3, report-app-client-id: ...}
+#       secrets: {TESTS_KEY: ..., LEDGER_KEY: ..., REPORT_APP_KEY: ...}
+#
+# Who holds what (design v2.2 section 2): J0 has no environment and no secret, only a read-only
+# token, and reads API metadata of the PR. J1 (environment cairnwork-verify: tests key, ledger
+# claim key) is scheduled only when J0 let the PR through; a PR from another account comes from a
+# fork and J0 stops it. J2 (environment cairnwork-report: the report App key) never runs PR code;
+# it reads the ledger itself and creates the required check with the App's token. With no ledger
+# repository or no claim key, J1 stops with LEDGER_NOT_CONFIGURED before fetching anything.
 
 on:
   workflow_call:
@@ -15,7 +31,7 @@ on:
         type: string
         required: true
       ledger-repo:
-        description: "Private ledger repository (owner/name); S3"
+        description: "Ledger repository (owner/name, same owner as the target)"
         type: string
         required: false
         default: ''
@@ -23,12 +39,30 @@ on:
         description: "The 40-hex commit of cairnwork/verify-action the caller pins in uses:"
         type: string
         required: true
+      target-branch:
+        description: "The one branch accepted PRs target"
+        type: string
+        required: false
+        default: main
+      max-attempts:
+        description: "Counted runs per test version (1-20)"
+        type: number
+        required: false
+        default: 1
+      report-app-client-id:
+        description: "Client ID of the customer's report App (creates the required check)"
+        type: string
+        required: false
+        default: ''
     secrets:
       TESTS_KEY:
         description: "Read-only deploy key of the tests repository"
         required: true
       LEDGER_KEY:
-        description: "Claim deploy key of the ledger repository (S3)"
+        description: "Claim deploy key of the ledger repository"
+        required: false
+      REPORT_APP_KEY:
+        description: "Private key of the report App"
         required: false
     outputs:
       j1-result:
@@ -40,25 +74,41 @@ permissions:
 
 jobs:
   gate:
-    # Placeholder for J0 (S2a): no environment, no secret, read-only token, and it lets nothing
-    # through. S2a replaces this job and its outputs (head-sha, base-sha, issue, pr, author,
-    # target-branch).
+    # J0: no environment, no secret, read-only token; API metadata only, never the PR's files.
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     permissions:
       contents: read
+      pull-requests: read
     outputs:
       run: ${{ steps.gate.outputs.run }}
-      head-sha: ''
-      base-sha: ''
-      issue: ''
-      pr: ''
-      author: ''
-      target-branch: ''
+      code: ${{ steps.gate.outputs.code }}
+      head-sha: ${{ steps.gate.outputs.head-sha }}
+      base-sha: ${{ steps.gate.outputs.base-sha }}
+      issue: ${{ steps.gate.outputs.issue }}
+      pr: ${{ steps.gate.outputs.pr }}
+      author: ${{ steps.gate.outputs.author }}
+      target-branch: ${{ steps.gate.outputs.target-branch }}
     steps:
-      - name: Not yet implemented (S2a)
+      - name: The verify-action commit is a 40-hex id
+        env:
+          CW_VERIFY_ACTION_SHA: ${{ inputs.verify-action-sha }}
+        run: printf '%s' "$CW_VERIFY_ACTION_SHA" | grep -q -x -E '[0-9a-f]{40}'
+
+      - name: Checkout verify-action scripts
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: cairnwork/verify-action
+          ref: ${{ inputs.verify-action-sha }}
+          path: .cw-accept
+          persist-credentials: false
+
+      - name: Gate
         id: gate
-        run: echo "run=false" >> "$GITHUB_OUTPUT"
+        env:
+          ACCEPT_TOKEN: ${{ github.token }}
+          ACCEPT_TARGET_BRANCH: ${{ inputs.target-branch }}
+        run: /usr/bin/python3 -I .cw-accept/scripts/accept/j0_gate.py
 
   verify:
     # J1. Every value from J0 reaches the scripts through env and is format-checked there; nothing
@@ -118,7 +168,10 @@ jobs:
           CW_LEDGER_REPO: ${{ inputs.ledger-repo }}
           CW_RUN_ID: ${{ github.run_id }}
           CW_RUN_ATTEMPT: ${{ github.run_attempt }}
+          CW_TARGET_REPO_ID: ${{ github.repository_id }}
+          CW_MAX_ATTEMPTS: ${{ inputs.max-attempts }}
           CW_TESTS_KEY: ${{ secrets.TESTS_KEY }}
+          CW_LEDGER_KEY: ${{ secrets.LEDGER_KEY }}
           CW_TARGET_TOKEN: ${{ github.token }}
         run: |
           umask 077
@@ -132,3 +185,77 @@ jobs:
         env:
           CW_PRIVATE: ${{ runner.temp }}/cw-j1
         run: /usr/bin/python3 -I .cw-accept/scripts/accept/j1_emit.py "$CW_PRIVATE"
+
+  report:
+    # J2: runs whatever J0 and J1 did; never runs PR code. Reads the ledger with the App's token,
+    # writes the verdict, reads again and creates the required check (success or failure only).
+    needs: [gate, verify]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: cairnwork-report
+    permissions:
+      contents: read
+    steps:
+      - name: Runner self-check; inputs have their shapes
+        id: names
+        env:
+          CW_VERIFY_ACTION_SHA: ${{ inputs.verify-action-sha }}
+          CW_LEDGER_REPO: ${{ inputs.ledger-repo }}
+          CW_OWNER: ${{ github.repository_owner }}
+        run: |
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          printf '%s' "$CW_VERIFY_ACTION_SHA" | grep -q -x -E '[0-9a-f]{40}'
+          if [ -n "$CW_LEDGER_REPO" ]; then
+            printf '%s' "$CW_LEDGER_REPO" | grep -q -x -E '[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}'
+            test "${CW_LEDGER_REPO%%/*}" = "$CW_OWNER"  # one App installation: same owner
+            echo "ledger-name=${CW_LEDGER_REPO#*/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout verify-action scripts
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          repository: cairnwork/verify-action
+          ref: ${{ inputs.verify-action-sha }}
+          path: .cw-accept
+          persist-credentials: false
+
+      - name: App token for the target repository (check runs, job state)
+        id: app
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.report-app-client-id }}
+          private-key: ${{ secrets.REPORT_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-checks: write
+          permission-actions: read
+
+      - name: App token for the ledger repository (tags)
+        id: ledger
+        if: inputs.ledger-repo != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ inputs.report-app-client-id }}
+          private-key: ${{ secrets.REPORT_APP_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ steps.names.outputs.ledger-name }}
+          permission-contents: write
+
+      - name: Report
+        env:
+          ACCEPT_TARGET_REPO: ${{ github.repository }}
+          ACCEPT_TARGET_REPO_ID: ${{ github.repository_id }}
+          ACCEPT_SHA: ${{ needs.gate.outputs.head-sha }}
+          ACCEPT_RUN_ID: ${{ github.run_id }}
+          ACCEPT_J0_CODE: ${{ needs.gate.outputs.code }}
+          ACCEPT_PR_ISSUE: ${{ needs.gate.outputs.issue }}
+          ACCEPT_J1_JOB_RESULT: ${{ needs.verify.result }}
+          ACCEPT_J1_RESULT: ${{ needs.verify.outputs.result }}
+          ACCEPT_J1_JOB_NAME: verify
+          ACCEPT_LEDGER_URL: ${{ inputs.ledger-repo != '' && format('https://github.com/{0}.git', inputs.ledger-repo) || '' }}
+          ACCEPT_CHECK_NAME: cairnwork-accept
+          ACCEPT_NOTE_CHECK_NAME: cairnwork-accept-note
+          ACCEPT_APP_TOKEN: ${{ steps.app.outputs.token }}
+          ACCEPT_LEDGER_TOKEN: ${{ steps.ledger.outputs.token }}
+        run: /usr/bin/python3 -I .cw-accept/scripts/accept/j2_report.py

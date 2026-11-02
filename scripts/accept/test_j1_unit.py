@@ -33,6 +33,7 @@ def good_env(private: Path, **extra: str) -> dict[str, str]:
         "CW_TESTS_REPO": "org/tests", "CW_LEDGER_REPO": "", "CW_RUN_ID": "4242",
         "CW_RUN_ATTEMPT": "1", "CW_CAIRNWORK_BIN": "/nonexistent/bin", "CW_UV": "/usr/bin/false",
         "CW_TESTS_KEY": "KEYCANARY-unit", "CW_TARGET_TOKEN": "TOKENCANARY-unit",
+        "CW_TARGET_REPO_ID": "99", "CW_MAX_ATTEMPTS": "1",
     }  # fmt: skip
     env.update(extra)
     return env
@@ -138,6 +139,11 @@ class Inputs(unittest.TestCase):
         self.assertNotIn("CW_TESTS_KEY", env)
         self.assertNotIn("CW_TARGET_TOKEN", env)
         self.assertNotIn("KEYCANARY", repr(cfg))
+        self.assertEqual((cfg.target_repo_id, cfg.max_attempts), (99, 1))
+        env = good_env(Path("/tmp/p"), CW_LEDGER_REPO="org/ledger", CW_LEDGER_KEY="LEDGERCANARY")
+        cfg, *_ = jv.read_config(env)
+        self.assertNotIn("CW_LEDGER_KEY", env)
+        self.assertNotIn("LEDGERCANARY", repr(cfg))
 
     def test_malformed_inputs(self):
         for key, value in (
@@ -147,7 +153,9 @@ class Inputs(unittest.TestCase):
             ("CW_TARGET_REPO", "org"), ("CW_TARGET_BRANCH", "-main"),
             ("CW_TARGET_BRANCH", "a..b"), ("CW_TARGET_BRANCH", "main:refs/x"),
             ("CW_TESTS_REPO", "git@github.com:x/y"), ("CW_LEDGER_REPO", "x"),
-            ("CW_PRIVATE", "relative"),
+            ("CW_PRIVATE", "relative"), ("CW_TARGET_REPO_ID", "0"), ("CW_TARGET_REPO_ID", "x"),
+            ("CW_TARGET_REPO_ID", str(2**31)), ("CW_MAX_ATTEMPTS", "0"), ("CW_MAX_ATTEMPTS", "21"),
+            ("CW_MAX_ATTEMPTS", ""),
         ):  # fmt: skip
             cfg, *_ = jv.read_config(good_env(Path("/tmp/p"), **{key: value}))
             self.assertIsNone(cfg, (key, value))
