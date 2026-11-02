@@ -27,8 +27,8 @@ outputs through ``env:``, never into ``run:``); each is checked for shape before
                              J2 signs every verdict commit with it and honours only verdicts
                              whose signature verifies against its public half (an unhonoured
                              one: LEDGER_VERDICT_UNSIGNED). A configured ledger URL without
-                             this key is refused: LEDGER_KEY_MISSING, a failed required check,
-                             never a success. The App token is for the target repository's
+                             this key is refused: LEDGER_KEY_MISSING, no check created, no
+                             verdict written, exit 1, the code in the step summary. The App token is for the target repository's
                              check-run API only, never for reading or writing the ledger.
 
 Prints one line of JSON with fixed values (conclusion, code). Exit 0 when the decision was carried
@@ -244,13 +244,16 @@ def main(environ: dict[str, str], api: Any = None, ledger_url: str | None = None
     if env is None:
         print(json.dumps({"conclusion": None, "code": "ARGS_INVALID"}))
         return 1
-    api = api or Api(env["repo"], env["token"])
     url = ledger_url or env["ledger_url"]
-    no_ledger = L.LEDGER_NOT_CONFIGURED if not url else L.LEDGER_KEY_MISSING  # url without key: refuse
-    use = bool(url and env["ledger_key"])
+    if url and not env["ledger_key"]:  # a ledger without the verdict key: unsigned verdicts nobody honours
+        _summary(environ, f"cairnwork-accept: {L.LEDGER_KEY_MISSING} (ledger-repo is set, LEDGER_VERDICT_KEY is not)")
+        print(json.dumps({"conclusion": None, "code": L.LEDGER_KEY_MISSING}, separators=(",", ":")))
+        return 1
+    api = api or Api(env["repo"], env["token"])
+    use = bool(url)
     io, key_dir = open_ledger(url, env["repo_id"], env["ledger_key"]) if use else (None, None)
     try:
-        check = run(env, api, io, no_ledger)
+        check = run(env, api, io)
     finally:
         if io is not None:
             io.close()
@@ -260,6 +263,18 @@ def main(environ: dict[str, str], api: Any = None, ledger_url: str | None = None
     print(json.dumps({"conclusion": check.conclusion, "code": T.public_code(check.code)},
                      separators=(",", ":")))  # fmt: skip
     return 0 if ok else 1
+
+
+def _summary(environ: dict[str, str], line: str) -> None:
+    """Append one fixed line to the job summary when the runner provides one."""
+    path = environ.get("GITHUB_STEP_SUMMARY", "")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError:
+        pass
 
 
 def _cli() -> int:

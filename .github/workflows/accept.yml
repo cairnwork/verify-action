@@ -268,7 +268,7 @@ jobs:
           ACCEPT_J1_JOB_RESULT: ${{ needs.verify.result }}
           ACCEPT_J1_RESULT: ${{ needs.verify.outputs.result }}
           ACCEPT_J1_JOB_NAME: verify
-          ACCEPT_LEDGER_URL: ${{ inputs.ledger-repo != '' && format('git@github.com:{0}.git', inputs.ledger-repo) || '' }}  # SSH form only; without the key J2 reports LEDGER_KEY_MISSING
+          ACCEPT_LEDGER_URL: ${{ inputs.ledger-repo != '' && format('git@github.com:{0}.git', inputs.ledger-repo) || '' }}  # SSH form only; without the key J2 stops: LEDGER_KEY_MISSING, no check
           ACCEPT_MIN_PROTECTION: ${{ inputs.min-protection }}
           ACCEPT_MAX_ATTEMPTS: ${{ inputs.max-attempts }}
           ACCEPT_CHECK_NAME: cairnwork-accept

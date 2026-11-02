@@ -512,12 +512,32 @@ class J2Wiring(LocalLedger):
             "ACCEPT_APP_TOKEN": "target-app-token", "ACCEPT_LEDGER_TOKEN": "tok",
         }  # fmt: skip
         api, out = JobsApi((404, None)), io.StringIO()
+        summary = os.path.join(self.tmp.name, "summary.md")
+        environ["GITHUB_STEP_SUMMARY"] = summary
+        tags = lambda: subprocess.run(["git", "ls-remote", "--tags", "--", self.remote], capture_output=True, check=True).stdout  # noqa: E731
+        before = tags()
         with mock.patch.object(R.IO, "GitLedger", recording), redirect_stdout(out):
-            self.assertEqual(R.main(environ, api=api, ledger_url=self.remote), 0)
-        self.assertEqual(seen, [])  # no ledger handle at all: the token never reaches the ledger
-        self.assertEqual(json.loads(out.getvalue()), {"conclusion": T.FAILURE, "code": "LEDGER_KEY_MISSING"})
-        self.assertNotIn(T.SUCCESS, [c["conclusion"] for c in api.checks])
-        self.assertIn("LEDGER_KEY_MISSING", api.checks[-1]["output"]["title"])
+            self.assertEqual(R.main(environ, api=api, ledger_url=self.remote), 1)
+        self.assertEqual(seen, [])  # no ledger handle at all: nothing read, nothing written
+        self.assertEqual(json.loads(out.getvalue()), {"conclusion": None, "code": "LEDGER_KEY_MISSING"})
+        self.assertEqual(api.checks, [])  # no check created
+        with open(summary, encoding="utf-8") as handle:
+            self.assertIn("LEDGER_KEY_MISSING", handle.read())
+        self.assertEqual(tags(), before)  # no verdict written
+
+    def test_no_ledger_and_no_key_reports_as_before(self):
+        environ = {
+            "ACCEPT_TARGET_REPO": "org/target", "ACCEPT_TARGET_REPO_ID": str(REPO_ID),
+            "ACCEPT_SHA": HEAD, "ACCEPT_RUN_ID": "200", "ACCEPT_J0_CODE": "",
+            "ACCEPT_PR_ISSUE": "", "ACCEPT_J1_JOB_RESULT": "failure", "ACCEPT_J1_RESULT": "",
+            "ACCEPT_J1_JOB_NAME": "verify", "ACCEPT_CHECK_NAME": "cairnwork-accept",
+            "ACCEPT_NOTE_CHECK_NAME": "cairnwork-accept-note", "ACCEPT_APP_TOKEN": "target-app-token",
+        }  # fmt: skip
+        api, out = JobsApi((404, None)), io.StringIO()
+        with redirect_stdout(out):
+            R.main(environ, api=api)
+        self.assertEqual(json.loads(out.getvalue()), {"conclusion": T.FAILURE, "code": "LEDGER_NOT_CONFIGURED"})
+        self.assertEqual(len(api.checks), 1)
 
     def test_no_ledger_url_is_still_not_configured(self):
         check = R.run({"sha": HEAD, "run_id": 200, "j0_code": None, "pr_issue": None, "j1_job_success": False,
