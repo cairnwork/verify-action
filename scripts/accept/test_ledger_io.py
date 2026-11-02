@@ -400,6 +400,7 @@ class SignedVerdicts(Scenario):
             IO.GitLedger(self.remote, TARGET, sign=True)
         io = self.signer(self.keygen("k1"))
         self.assertEqual(self.j1(io=io), (1, None))  # claim path through a signing handle
+        io.read()
         self.assertEqual(io._git("log", "--format=%G?", "-1", f"refs/l/claim/{VER}/1").strip(), "N")
 
 
