@@ -194,9 +194,9 @@ def read_env(environ: dict[str, str]) -> dict[str, Any] | None:
     }  # fmt: skip
 
 
-def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None, no_ledger: str = L.LEDGER_NOT_CONFIGURED) -> T.Check:
-    """The whole J2 decision with I/O injected; ``io`` None means no ledger is used: ``no_ledger``
-    (LEDGER_NOT_CONFIGURED, or LEDGER_KEY_MISSING when a ledger is configured without the key)."""
+def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None) -> T.Check:
+    """The whole J2 decision with I/O injected; ``io`` None means no ledger is configured
+    (LEDGER_NOT_CONFIGURED). A ledger without the verdict key never reaches here (see ``main``)."""
     result = T.parse_j1(env["j1_text"], run_id=env["run_id"], sha=env["sha"])
     attempt = result["j1_attempt"] if result is not None else None
     if attempt is None and env["j0_code"] is None:
@@ -208,7 +208,7 @@ def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None, no_ledger: str =
     if env["j0_code"] in T.NO_CHECK_J0:
         return T.decide_check(None, written={}, **common)
     if io is None:
-        return T.decide_check(None, ledger_error=no_ledger, written={}, **common)
+        return T.decide_check(None, ledger_error=L.LEDGER_NOT_CONFIGURED, written={}, **common)
     ledger = io.read()
     written: dict[tuple[str, int], str] = {}
     if ledger is not None:
