@@ -31,6 +31,9 @@ class UnknownRunTimeout(unittest.TestCase):
         self.led = TL.ledger(TL.bind(), TL.claim(1, run_id=200, time=1000))
         self.mine = TL.j1(TL.j1_result("rejected", code="ATTEMPT_PENDING"))
 
+    def test_limit_is_30_hours(self):  # the boundary itself is pinned by the two tests below
+        self.assertEqual(T.J1_UNKNOWN_TIMEOUT, 30 * 3600)
+
     def test_deleted_run_within_the_limit_stays_pending(self):
         for now in (None, 1000, 1000 + LIMIT):
             self.assertEqual(T.plan_writes(self.led, TL.SHA1, 100, self.mine, unknown, now), [])

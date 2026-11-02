@@ -35,9 +35,10 @@ FINISHED, RUNNING, UNKNOWN = "FINISHED", "RUNNING", "UNKNOWN"
 J1_INCOMPLETE = "J1_INCOMPLETE"
 # Another run's J1 job stayed UNKNOWN (run deleted, or this token cannot see it) for longer than
 # J1_UNKNOWN_TIMEOUT seconds after its claim was written: its claim is closed as ATTEMPT_LOST with
-# this code, so the sha gets a failed check instead of waiting forever (verify-action#13). 30 hours
-# is GitHub's 24-hour queue limit plus the 6-hour job limit: a J1 job still alive is visible and
-# never UNKNOWN for that long, so only a run that is gone (or hidden) reaches it.
+# this code, so the sha gets a failed check instead of waiting forever (verify-action#13). The
+# clock starts at the claim, when J1 is already running, and the J1 job stops after 75 minutes
+# (accept.yml timeout-minutes); 30 hours leaves a wide margin for the API briefly not showing the
+# job and for re-runs, and is still far shorter than a wait anyone would have to step in for.
 J1_RUN_NOT_FOUND = "J1_RUN_NOT_FOUND"
 J1_UNKNOWN_TIMEOUT = 30 * 3600
 PROTECTION_BELOW_MINIMUM = "PROTECTION_BELOW_MINIMUM"
