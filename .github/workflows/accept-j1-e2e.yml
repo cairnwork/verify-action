@@ -1,0 +1,108 @@
+name: Accept J1 end-to-end
+
+# J1 (step S2b) on a GitHub-hosted runner with the same host setup as accept.yml: local git
+# repositories, simulated pull_request_target events, the real cairnwork-verify run as Cairnwork's
+# verifier account in its bwrap policy (scripts/accept/e2e_j1.py). Covers AC1, AC2, AC5, AC10,
+# AC11 and AC14, after host witnesses for the AC4 items S1 left open (scripts/accept/witness_j1.py),
+# taken under the production setup: an AppArmor profile for bwrap, not the global sysctl lift.
+# The second job reads this run's own job log and annotations back through the API and fails if
+# the deferred test's canary, test file name or test name shows up there (AC5).
+# No secrets are used.
+
+on:
+  push:
+    paths:
+      - 'scripts/accept/**'
+      - '.github/workflows/accept*.yml'
+  pull_request:
+    paths:
+      - 'scripts/accept/**'
+      - '.github/workflows/accept*.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: accept-j1-e2e-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CW_CAIRNWORK_REF: 36b569240b896878c23153927c27781755af9e3c
+    steps:
+      - name: Checkout verify-action
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          enable-cache: false
+
+      - name: Host setup (the accept workflow's script)
+        env:
+          CW_PRIVATE: ${{ runner.temp }}/cw-j1
+        run: |
+          if ! sh scripts/accept/j1_host.sh; then
+            # setup output carries no test content; show its tail to debug the runner image
+            tail -n 40 "$CW_PRIVATE/host.log" || true
+            exit 1
+          fi
+
+      - name: Host witnesses (AppArmor profile, groups, firewall, limits, writable places)
+        env:
+          CW_PRIVATE: ${{ runner.temp }}/cw-j1
+        run: '"$CW_PRIVATE/cw-src/.venv/bin/python" -I scripts/accept/witness_j1.py'
+
+      - name: J1 cases
+        env:
+          CW_PRIVATE: ${{ runner.temp }}/cw-j1
+          CW_E2E_SEED: ${{ github.run_id }}.${{ github.run_attempt }}
+        run: |
+          "$CW_PRIVATE/cw-src/.venv/bin/python" -I scripts/accept/e2e_j1.py
+
+  log-scan:
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    steps:
+      - name: The e2e job's log and annotations hold no canary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          E2E_RESULT: ${{ needs.e2e.result }}
+        run: |
+          set -eu
+          test "$E2E_RESULT" = "success"
+          canary="$(python3 -I -c 'import hashlib,os; print("cnry" + hashlib.sha256(("cw-j1-e2e:%s.%s" % (os.environ["RUN_ID"], os.environ["RUN_ATTEMPT"])).encode()).hexdigest()[:24])')"
+          api() { curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$@"; }
+          job="$(api "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
+            | python3 -I -c 'import json,sys; print([j["id"] for j in json.load(sys.stdin)["jobs"] if j["name"] == "e2e"][0])')"
+          # baseline: this is the e2e job's complete log (the summary line e2e_j1.py prints);
+          # a finished job's log can take a moment to become available
+          for try in 1 2 3 4 5 6; do
+            api "https://api.github.com/repos/$REPO/actions/jobs/$job/logs" > "$RUNNER_TEMP/e2e.log" || true
+            grep -q -E "J1 e2e: [0-9]+ checks, 0 failed" "$RUNNER_TEMP/e2e.log" && break
+            test "$try" -lt 6 || { echo "e2e log not available"; exit 1; }
+            sleep 10
+          done
+          api "https://api.github.com/repos/$REPO/check-runs/$job/annotations" > "$RUNNER_TEMP/e2e-annotations.json"
+          for file in e2e.log e2e-annotations.json; do
+            if grep -q -F "$canary" "$RUNNER_TEMP/$file"; then
+              echo "a canary reached $file"
+              exit 1
+            fi
+          done
+          echo "no canary in the e2e job log ($(wc -l < "$RUNNER_TEMP/e2e.log") lines) or its annotations"
