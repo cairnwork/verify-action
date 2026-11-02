@@ -253,6 +253,7 @@ class WitnessJudge(unittest.TestCase):
             "tasks": {"few_in_scope": True, "many_in_scope": False, "many_outside": True},
             "post_run_paths": {p: {"exists": True, "account_writable": False} for p in self.PATHS},
             "writable": [["/tmp", "sticky"], ["/var/tmp", "sticky"], ["/dev/shm", "sticky"]],
+            "host_dev": {"sticky": 2, "other": []},
             "sandbox_run_root": self.sandbox(),
         }
 
@@ -298,6 +299,8 @@ class WitnessJudge(unittest.TestCase):
                 [["/tmp", "sticky"], "/opt"],  # malformed entry
                 [],
             ],
+            "host_dev": [{"sticky": 2, "other": ["/dev/x"]}, {"sticky": 0, "other": []},
+                         {"other": []}, {"sticky": 2}],
             "sandbox_run_root": [
                 self.sandbox(run_root_write=False),
                 {**self.sandbox(), "run_root_landed": False},

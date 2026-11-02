@@ -18,6 +18,8 @@ a baseline that sees nothing is a failure, like a breach. What is checked comes 
   shared directories (``/tmp`` kind: the account can add its own entries but not change others')
   and nothing else; the account must find ``/tmp`` (the baseline). ``j1_host.sh`` removes
   other-write from every non-sticky directory and file on the host's file systems.
+- ``host_dev``: the host's /dev (which the account walk cannot see) holds no other-writable
+  non-sticky directory or regular file; the baseline is that the same search finds /dev/shm.
 - ``sandbox_run_root``: as the account inside Cairnwork's own bwrap policy with a writable run
   root (as J1's verifiers run): a write inside the run root lands on the host; writes to host
   places the account could write without the sandbox do not reach the host; the private directory's canary is
@@ -48,12 +50,14 @@ import j1_verify as jv  # noqa: E402
 
 EXPECTED = (
     "apparmor", "groups", "firewall", "memory", "tasks", "post_run_paths", "writable",
-    "sandbox_run_root",
+    "host_dev", "sandbox_run_root",
 )
 PROFILE = "cairnwork-bwrap"
 # The hosted image ships many 0777 trees (/opt, /usr/share, /usr/local/bin, ...); j1_host.sh
 # takes other-write away from all of them, so the only writable places left are sticky ones.
-SKIP_WALK = ("/proc", "/sys", "/dev/pts")
+# Under Cairnwork's allow-all probe (bwrap --bind / / --dev /dev) /dev is bwrap's own, so the
+# account walk skips it and ``host_dev`` looks at the host's /dev as root instead.
+SKIP_WALK = ("/proc", "/sys", "/dev")
 BIG, SMALL = 7 << 30, 256 << 20  # bytes; J1's MemoryMax is 6G
 MANY, FEW = 3000, 50  # threads; J1's TasksMax is 2048
 
@@ -245,6 +249,17 @@ def observe(private: Path) -> dict[str, Any]:
         obs["writable"] = seen["writable"]
         obs["post_run_paths"] = {p: {"exists": os.path.exists(p), "account_writable": w}
                                  for p, w in seen["post_run"].items()}  # fmt: skip
+    try:
+        found = subprocess.run(
+            ["/usr/bin/sudo", "-n", "/usr/bin/find", "/dev", "-xdev", "(", "-type", "d", "-o",
+             "-type", "f", ")", "-perm", "-0002", "-printf", "%m %p\\n"],
+            capture_output=True, text=True, check=True, timeout=120,
+        ).stdout.splitlines()  # fmt: skip
+        modes = [line.split(" ", 1) for line in found]
+        obs["host_dev"] = {"sticky": sum(1 for m, _p in modes if int(m, 8) & 0o1000),
+                           "other": sorted(p for m, p in modes if not int(m, 8) & 0o1000)}  # fmt: skip
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
     obs.update(_sandbox_run_root(private, stage, ip, account_wrap))
     py, scope = sys.executable, jv.scope_argv()
     obs["memory"] = {
@@ -297,6 +312,10 @@ def judge(obs: dict[str, Any], expected_paths: list[str]) -> dict[str, tuple[boo
             ok = len(entries) == len(value) and "/tmp" in sticky and not extra
             out[name] = (ok, f"{len(sticky)} sticky, baseline_tmp={'/tmp' in sticky}, "
                              f"unexpected={extra[:40]} ({len(extra)})")  # fmt: skip
+        elif name == "host_dev":
+            other = value.get("other")
+            ok = isinstance(value.get("sticky"), int) and value["sticky"] >= 1 and other == []
+            out[name] = (ok, f"sticky={value.get('sticky')} other={other}")
         elif name == "sandbox_run_root":
             inside = value.get("inside", {})
             writes = inside.get("host_writes", {})
