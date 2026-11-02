@@ -289,6 +289,37 @@ class BudgetAtJ2(unittest.TestCase):
         check = self.check(led, sha=SHA1)
         self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.ATTEMPTS_EXHAUSTED))
 
+    def test_claim_ref_naming_no_head_is_reported_not_charged(self):
+        # #30: one unclassifiable claim ref with max-attempts 1 must not exhaust a verified head
+        odd = ("refs/tags/claim/%s/1" % VER, "commit", "not json\n")
+        led = ledger(bind(), odd, claim(2), verdict(2))
+        check = self.check(led, sha=SHA1)
+        self.assertEqual((check.conclusion, check.code), (T.SUCCESS, "VERIFIED"))
+        self.assertEqual((check.skipped, check.skipped_claims, T.skipped_claims(led, VER)), (1, 1, 1))
+        self.assertEqual(L.used(led, VER), 2)  # J1 still counts it: no new attempt over it
+        self.assertEqual(L.j1_gate(led, SHA2, 5, VER, 1).code, L.ATTEMPTS_EXHAUSTED)
+
+    def test_claim_ref_naming_another_head_charges_only_that_head(self):
+        bad = claim(1, sha=SHA2)
+        odd = (bad[0], bad[1], bad[2].replace('"v":1', '"v":2'))  # unreadable, but names SHA2
+        led = ledger(bind(), odd, claim(2), verdict(2))
+        check = self.check(led, sha=SHA1)
+        self.assertEqual((check.conclusion, check.code, check.skipped_claims), (T.SUCCESS, "VERIFIED", 1))
+        self.assertIn(SHA2, led.stuck)  # the named head is held by LEDGER_VERDICT_STRANDED
+        self.assertEqual(L.j1_gate(led, "3" * 40, 5, VER, 1).code, L.ATTEMPTS_EXHAUSTED)
+
+    def test_odd_claim_ref_of_another_version_is_not_subtracted(self):
+        odd = ("refs/tags/claim/%s/1" % VER2, "commit", "not json\n")
+        led = ledger(bind(), odd, claim(1, sha=SHA2, k=4), claim(2), verdict(2))
+        self.assertEqual((T.skipped_claims(led, VER), T.skipped_claims(led, VER2)), (0, 1))
+        self.assertEqual(self.check(led, sha=SHA1).code, L.ATTEMPTS_EXHAUSTED)  # SHA2's claim spent it
+
+    def test_stranded_verdict_number_is_still_charged(self):
+        odd = ("refs/tags/claim/%s/1" % VER, "commit", "not json\n")
+        led = ledger(bind(), odd, verdict(1, sha=SHA2, k=4), claim(2), verdict(2))
+        self.assertEqual(T.skipped_claims(led, VER), 0)  # the number has a stranded verdict
+        self.assertEqual(self.check(led, sha=SHA1).code, L.ATTEMPTS_EXHAUSTED)
+
     def test_returned_attempt_is_not_spent(self):
         led = ledger(claim(1, sha=SHA2, k=4), verdict(1, "NOT_CONSUMED", sha=SHA2, k=5, code="BAD_SCOPE"), claim(2), verdict(2))
         self.assertEqual(self.check(led, sha=SHA1).conclusion, T.SUCCESS)
