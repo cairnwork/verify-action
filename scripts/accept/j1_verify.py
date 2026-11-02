@@ -2,28 +2,29 @@
 
 Design v2.2, sections 2-3 (step S2b). Inputs come from J0's normalised outputs through
 environment variables (never expanded into a ``run:`` line); each is format-checked here. The
-job's secrets (tests deploy key, GITHUB_TOKEN for the target) are removed from the environment
+job's secrets (tests deploy key, ledger claim key, GITHUB_TOKEN for the target) are removed from the environment
 at start, so no child process inherits them, and only the git calls that need one get it.
 
 Steps (v2.2 section 3, "J1 的順序"):
 
 1. Runner self-check; owner-only private directory; from here every byte this process and its
-   children print goes to ``<private>/j1.log`` (0600). No ledger configured: stop with
-   ``LEDGER_NOT_CONFIGURED`` before anything is fetched. **In S2b ``ledger_for`` always returns
-   None**, so no commit of verify-action runs a candidate without a ledger; S3 replaces it.
+   children print goes to ``<private>/j1.log`` (0600). No ledger configured (no ledger
+   repository or no claim key): stop with ``LEDGER_NOT_CONFIGURED`` before anything is fetched,
+   so no candidate ever runs without a ledger.
 2. Fetch the PR head and the target branch (objects only, nothing checked out); check the head is
    still the PR's (``STALE_HEAD``), one commit on head^ (``NOT_ONE_COMMIT_ON_BASE``), head^ in the
    target branch (``BASE_NOT_IN_TARGET``), no dependency file touched. Tests repo: the tree plus
    ``task.json`` only (blobless clone) -> test version (tree id of ``tasks/<N>/tests``), author and
    retirement checks.
-3. Ledger read (S3).
+3. Ledger read (``ledger_io.j1_check``, S3).
 4. Toolchain for the verifier account: the target's locked dependencies from head^ (wheels with
    hashes only) or, with none, the pinned pytest set.
 5. Non-consuming prechecks: scope and protected paths with Cairnwork's own functions; no test blob
    in the PR head or the target branch (``TESTS_ALREADY_PUBLIC``); account, firewall, limits.
 6. Fetch the overlay blobs, synthesise the test commit on head^, check it with Cairnwork's own
    ``test_paths``, bundle it, ``import-tests``. The tests key file is deleted here.
-7-8. Bind and claim in the ledger (S3).
+7-8. Bind and claim in the ledger (``ledger_io.j1_claim``); the claim key file is deleted
+   right after, before the candidate runs.
 9. ``cairnwork-verify run`` as the runner account inside a systemd scope with memory, task and
    CPU limits (Cairnwork runs the verifiers as its verifier account in its own bwrap policy);
    end every verifier-account process; map the result to the whitelist (``j1_result``).
@@ -52,6 +53,8 @@ sys.path.insert(0, str(HERE))
 
 import j1_git as jg  # noqa: E402
 import j1_result as jr  # noqa: E402
+import ledger as L  # noqa: E402
+import ledger_io as lio  # noqa: E402
 
 VERIFIER_USER = "cairnwork-verifier"
 VERIFIER_GROUP = "cairnwork"
@@ -97,10 +100,60 @@ class Ledger(Protocol):
     def bind_and_claim(self, head: str, issue: int, version: str) -> tuple[int | None, str | None]:
         """Steps 7-8: (claim number, None) once claimed, else (None, code)."""
 
+    def close(self) -> None:
+        """Remove the key and scratch files; called right after the claim, before the run."""
 
-def ledger_for(cfg: Config) -> Ledger | None:  # noqa: ARG001 - S3 wires the ledger repo here
-    """S2b has no ledger backend: every configuration is LEDGER_NOT_CONFIGURED."""
-    return None
+
+class GitLedger:
+    """J1's view of the ledger repository through ``ledger_io`` (S3): step 3 is ``j1_check``,
+    steps 7-8 are ``j1_claim`` (bind if not yet bound, read again, claim)."""
+
+    def __init__(self, url: str, target_repo_id: int, max_attempts: int, ids: dict[str, int],
+                 key_dir: Path | None = None, key: str = "") -> None:  # fmt: skip
+        self.url, self.target_repo_id, self.max_attempts = url, target_repo_id, max_attempts
+        self.ids, self.key_dir, self._key = ids, key_dir, key
+        self._io: lio.GitLedger | None = None
+
+    def _ledger(self) -> lio.GitLedger:
+        if self._io is None:
+            ssh_key = known_hosts = None
+            if self.key_dir is not None:
+                self.key_dir.mkdir(mode=0o700)
+                ssh_key, known_hosts = str(self.key_dir / "ledger"), str(self.key_dir / "known_hosts")
+                for path, text in ((ssh_key, self._key.strip() + "\n"), (known_hosts, jg.GITHUB_KNOWN_HOSTS)):
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                    with os.fdopen(fd, "w") as handle:
+                        handle.write(text)
+            self._key = ""
+            self._io = lio.GitLedger(self.url, self.target_repo_id, ssh_key=ssh_key, known_hosts=known_hosts)
+        return self._io
+
+    def check(self, head: str, issue: int, version: str) -> str | None:
+        try:
+            return lio.j1_check(self._ledger(), head, issue, version, self.max_attempts)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            return L.LEDGER_UNAVAILABLE
+
+    def bind_and_claim(self, head: str, issue: int, version: str) -> tuple[int | None, str | None]:
+        # exceptions propagate: a write may have landed, so J1 gives no result (J1_INCOMPLETE)
+        return lio.j1_claim(self._ledger(), head, issue, version, self.max_attempts, self.ids)
+
+    def close(self) -> None:
+        if self._io is not None:
+            self._io.close()
+        self._key = ""
+        if self.key_dir is not None:
+            shutil.rmtree(self.key_dir, ignore_errors=True)
+
+
+def ledger_for(cfg: Config) -> Ledger | None:
+    """The ledger repository the caller named, reached with the claim deploy key; None (so
+    LEDGER_NOT_CONFIGURED, nothing fetched) when no ledger repository or no key is configured."""
+    if not cfg.ledger_repo or not cfg.ledger_key.strip():
+        return None
+    ids = {"pr": cfg.pr, "run_id": cfg.run_id, "j1_attempt": cfg.run_attempt}
+    return GitLedger(f"git@github.com:{cfg.ledger_repo}.git", cfg.target_repo_id, cfg.max_attempts,
+                     ids, key_dir=cfg.private / "ledger-keys", key=cfg.ledger_key)  # fmt: skip
 
 
 class Reject(Exception):
@@ -127,8 +180,11 @@ class Config:
     private: Path
     cairnwork_bin: Path
     uv: str
+    target_repo_id: int = 0
+    max_attempts: int = 1
     tests_key: str = field(repr=False, default="")
     target_token: str = field(repr=False, default="")
+    ledger_key: str = field(repr=False, default="")
 
 
 @dataclass
@@ -157,10 +213,14 @@ def read_config(env: dict[str, str]) -> tuple[Config | None, str, int, int]:
         _BRANCH.match(env.get("CW_TARGET_BRANCH", "")) and ".." not in env["CW_TARGET_BRANCH"],
         _REPO.match(env.get("CW_TESTS_REPO", "")),
         env.get("CW_LEDGER_REPO", "") == "" or _REPO.match(env["CW_LEDGER_REPO"]),
+        _NUMBER.match(env.get("CW_TARGET_REPO_ID", "")),
+        _NUMBER.match(env.get("CW_MAX_ATTEMPTS", ""))
+        and int(env["CW_MAX_ATTEMPTS"]) <= L.MAX_ATTEMPTS_LIMIT,
         os.path.isabs(env.get("CW_PRIVATE", "")), os.path.isabs(env.get("CW_CAIRNWORK_BIN", "")),
         os.path.isabs(env.get("CW_UV", "")),
     )  # fmt: skip
-    if not all(checks) or int(env["CW_ISSUE"]) > MAX_ISSUE or int(env["CW_PR"]) > MAX_ISSUE:
+    big = (env["CW_ISSUE"], env["CW_PR"], env["CW_TARGET_REPO_ID"]) if all(checks) else ()
+    if not all(checks) or any(int(v) > MAX_ISSUE for v in big):
         return None, head, run_id, attempt
     cfg = Config(
         head=head, base=env["CW_BASE_SHA"], issue=int(env["CW_ISSUE"]), pr=int(env["CW_PR"]),
@@ -168,7 +228,9 @@ def read_config(env: dict[str, str]) -> tuple[Config | None, str, int, int]:
         target_branch=env["CW_TARGET_BRANCH"], tests_repo=env["CW_TESTS_REPO"],
         ledger_repo=env.get("CW_LEDGER_REPO", ""), run_id=run_id, run_attempt=attempt,
         private=Path(env["CW_PRIVATE"]), cairnwork_bin=Path(env["CW_CAIRNWORK_BIN"]),
-        uv=env["CW_UV"], tests_key=secrets["CW_TESTS_KEY"], target_token=secrets["CW_TARGET_TOKEN"],
+        uv=env["CW_UV"], target_repo_id=int(env["CW_TARGET_REPO_ID"]),
+        max_attempts=int(env["CW_MAX_ATTEMPTS"]), tests_key=secrets["CW_TESTS_KEY"],
+        target_token=secrets["CW_TARGET_TOKEN"], ledger_key=secrets["CW_LEDGER_KEY"],
     )  # fmt: skip
     return cfg, head, run_id, attempt
 
@@ -652,15 +714,24 @@ def run(cfg: Config, src: Sources, ledger: Ledger | None) -> dict[str, Any]:
         import_tests(cfg, state, ws.target, bundle, commit)
     except Reject as stop:
         log(f"rejected: {stop.fine}")
+        close_ledger(ledger)
         return jr.rejected(**ids, code=stop.code)
     except (jg.GitError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
         log(f"rejected: setup {type(exc).__name__}")
+        close_ledger(ledger)
         return jr.rejected(**ids, code=jr.RUNNER_SETUP_PROBLEM)
+    except BaseException:
+        close_ledger(ledger)
+        raise
     finally:
         drop_keys(cfg)
     # Steps 7-8. A clean (None, code) answer means nothing was claimed; an exception here may
-    # leave a claim behind, so it propagates and J1 gives no result (J2: J1_INCOMPLETE).
-    number, code = ledger.bind_and_claim(cfg.head, cfg.issue, ws.version)
+    # leave a claim behind, so it propagates and J1 gives no result (J2: J1_INCOMPLETE). The
+    # ledger key is gone before the candidate runs.
+    try:
+        number, code = ledger.bind_and_claim(cfg.head, cfg.issue, ws.version)
+    finally:
+        close_ledger(ledger)
     if number is None:
         code = code or "LEDGER_UNAVAILABLE"
         log(f"rejected: ledger:{code}")
@@ -688,6 +759,12 @@ def run(cfg: Config, src: Sources, ledger: Ledger | None) -> dict[str, Any]:
     return jr.ran(**ids, code=public, status=status, protection=protection, tests_consumed=used)
 
 
+def close_ledger(ledger: Ledger) -> None:
+    close = getattr(ledger, "close", None)
+    if callable(close):
+        close()
+
+
 def write_result(private: Path, result: dict[str, Any]) -> None:
     line = jr.render(result)
     fd = os.open(private / "result.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -696,8 +773,9 @@ def write_result(private: Path, result: dict[str, Any]) -> None:
 
 
 def main(*, ledger: Ledger | None = None, sources: Sources | None = None, injected: bool = False) -> int:
-    """Production calls this with no arguments: no ledger, GitHub sources. Only the e2e driver
-    (``e2e_j1.py``) passes ``injected=True`` with a test ledger and local sources."""
+    """Production calls this with no arguments: the ledger from ``ledger_for``, GitHub sources.
+    Only the e2e driver (``e2e_j1.py``) passes ``injected=True`` with a ledger and sources of its
+    own (local repositories)."""
     env = os.environ
     private = Path(env.get("CW_PRIVATE", "/nonexistent"))
     if not private_ok(private):

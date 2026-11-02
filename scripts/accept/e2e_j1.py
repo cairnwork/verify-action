@@ -47,6 +47,8 @@ CONFTEST = (
     "sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / 'src'))\n"
 )
 KEY_CANARY = "keycnry" + "0" * 8  # stand-in deploy key text: must never leave the private dir
+TARGET_REPO_ID, FORK_REPO_ID = 4242001, 4242999
+APP_TOKEN = "dummy-app-token"  # J2's App token stand-in: the fixture API accepts only this
 
 
 def canary_of(seed: str) -> str:
@@ -92,6 +94,7 @@ class Fixture:
     target: Path = Path()
     tests: Path = Path()
     main: str = ""
+    ledger: Path = Path()
     heads: dict[str, str] = field(default_factory=dict)
 
     def build(self) -> None:
@@ -123,6 +126,16 @@ class Fixture:
         self.heads["stale"] = heads["good"]
         self.heads["pr:stale"] = "99"
         self._tests(name)
+        self._ledger()
+
+    def _ledger(self) -> None:
+        """A ledger repository as S3 reads it: the config file on its default branch."""
+        work = self.root / "ledger-work"
+        work.mkdir()
+        git(work, "init", "-q", "-b", "main")
+        commit(work, {"cairnwork-ledger.json": json.dumps({"v": 1, "target_repo_id": TARGET_REPO_ID})})
+        self.ledger = self.root / "ledger.git"
+        git(self.root, "clone", "-q", "--bare", str(work), str(self.ledger))
 
     def _tests(self, name: str) -> None:
         work = self.root / "tests-work"
@@ -155,6 +168,72 @@ def event(fx: Fixture, label: str, *, issue: int = ISSUE, author: str = AUTHOR) 
             "base": {"ref": "main", "sha": fx.main},
         },
         "repository": {"full_name": "fixture-org/target"},
+    }  # fmt: skip
+
+
+class FixtureApi:
+    """The GitHub API as J0 (PR metadata) and J2 (job state, check runs) see it, answered from
+    the fixture repositories. ``prs`` overrides PR fields per number (fork, draft, body)."""
+
+    def __init__(self, fx: Fixture, token: str) -> None:
+        self.fx, self.token, self.checks = fx, token, []
+        self.prs: dict[int, dict] = {}
+        self.jobs: dict[tuple[int, int], str] = {}  # (run id, attempt) -> J1 job status
+
+    def call(self, method: str, path: str, body: dict | None = None) -> tuple[int, object]:
+        if self.token not in ("", APP_TOKEN):
+            return 401, None
+        parts = path.split("?")[0].strip("/").split("/")
+        fx = self.fx
+        if method == "POST" and parts == ["check-runs"]:
+            if self.token != APP_TOKEN:  # only the App may create the check
+                return 403, None
+            self.checks.append(body)
+            return 201, {}
+        if parts[:1] == ["pulls"] and len(parts) == 2:
+            number = int(parts[1])
+            label = next((k[3:] for k, v in fx.heads.items() if k.startswith("pr:") and v == str(number)), None)
+            if label is None:
+                return 404, None
+            head = git(fx.target, "rev-parse", f"refs/pull/{number}/head")
+            commits = git(fx.target, "rev-list", "--count", f"main..{head}")
+            pr = {"number": number, "draft": False, "body": f"Closes #{ISSUE}", "commits": int(commits),
+                  "user": {"login": AUTHOR}, "head": {"sha": head, "repo": {"id": TARGET_REPO_ID}},
+                  "base": {"ref": "main", "repo": {"id": TARGET_REPO_ID}}}  # fmt: skip
+            return 200, {**pr, **self.prs.get(number, {})}
+        if parts[:1] == ["pulls"] and parts[2:] == ["files"]:
+            head = git(fx.target, "rev-parse", f"refs/pull/{int(parts[1])}/head")
+            names = git(fx.target, "diff", "--name-only", f"{head}^", head).splitlines()
+            page = int(path.rsplit("page=", 1)[1])
+            return 200, [{"filename": n} for n in names] if page == 1 else []
+        if parts[:1] == ["commits"]:
+            parents = git(fx.target, "rev-list", "--parents", "-n", "1", parts[1]).split()[1:]
+            return 200, {"parents": [{"sha": p} for p in parents]}
+        if parts[:1] == ["compare"]:
+            base, branch = parts[1].split("...")
+            tip = git(fx.target, "rev-parse", branch)
+            if base == tip:
+                return 200, {"status": "identical"}
+            merge = git(fx.target, "merge-base", base, tip)
+            return 200, {"status": "ahead" if merge == base else "diverged"}
+        if parts[:2] == ["actions", "runs"] and "attempts" in parts:
+            state = self.jobs.get((int(parts[2]), int(parts[4])))
+            return (404, None) if state is None else (200, {"jobs": [{"name": "accept / verify", "status": state}]})
+        return 404, None
+
+
+def j0_event(fx: Fixture, label: str) -> dict:
+    """What J0 reads from the event file: the PR number and the event's head sha."""
+    return {"number": int(fx.heads[f"pr:{label}"]), "head": fx.heads[label], "repo": "fixture-org/target"}
+
+
+def j1_inputs(out: dict[str, str]) -> dict[str, str]:
+    """J0's outputs as the workflow hands them to J1 (accept.yml, the verify step's env)."""
+    return {
+        "CW_HEAD_SHA": out["head-sha"], "CW_BASE_SHA": out["base-sha"], "CW_ISSUE": out["issue"],
+        "CW_PR": out["pr"], "CW_AUTHOR": out["author"], "CW_TARGET_BRANCH": out["target-branch"],
+        "CW_TARGET_REPO": "fixture-org/target", "CW_TESTS_REPO": "fixture-org/tests",
+        "CW_LEDGER_REPO": "fixture-org/ledger",
     }  # fmt: skip
 
 
@@ -200,8 +279,12 @@ def driver(case_dir: Path) -> int:
         return j1_verify.main()
     sources = j1_verify.Sources(target_url=spec["target_url"], tests_url=spec["tests_url"],
                                 allow_file=True)  # fmt: skip
-    return j1_verify.main(ledger=MemoryLedger(case_dir / "ledger.json"), sources=sources,
-                          injected=True)  # fmt: skip
+    ledger: object = MemoryLedger(case_dir / "ledger.json")
+    if spec.get("ledger_url"):  # the production ledger code (ledger_io) on a local ledger repo
+        ids = {"pr": int(os.environ["CW_PR"]), "run_id": int(os.environ["CW_RUN_ID"]),
+               "j1_attempt": int(os.environ["CW_RUN_ATTEMPT"])}  # fmt: skip
+        ledger = j1_verify.GitLedger(spec["ledger_url"], TARGET_REPO_ID, 1, ids)
+    return j1_verify.main(ledger=ledger, sources=sources, injected=True)  # type: ignore[arg-type]
 
 
 # --- the harness -----------------------------------------------------------------------------
@@ -213,7 +296,8 @@ class Outcome:
     ledger: dict
 
 
-def run_case(fx: Fixture, base: Path, name: str, inputs: dict[str, str], injected: bool = True) -> Outcome:
+def run_case(fx: Fixture, base: Path, name: str, inputs: dict[str, str], injected: bool = True,
+             ledger_url: str = "") -> Outcome:  # fmt: skip
     case = base / name
     case.mkdir(mode=0o700)
     private, public = case / "private", case / "public"
@@ -221,6 +305,7 @@ def run_case(fx: Fixture, base: Path, name: str, inputs: dict[str, str], injecte
     public.mkdir()
     (case / "spec.json").write_text(json.dumps({
         "injected": injected, "target_url": f"file://{fx.target}", "tests_url": f"file://{fx.tests}",
+        "ledger_url": ledger_url,
     }))  # fmt: skip
     files = {k: public / k.lower() for k in ("GITHUB_OUTPUT", "GITHUB_ENV", "GITHUB_STEP_SUMMARY")}
     for path in files.values():
@@ -231,6 +316,7 @@ def run_case(fx: Fixture, base: Path, name: str, inputs: dict[str, str], injecte
         "CW_PRIVATE": str(private), "CW_CAIRNWORK_BIN": str(host / "cw-src/.venv/bin"),
         "CW_UV": shutil.which("uv") or "/usr/bin/false", "CW_RUN_ID": "4242",
         "CW_RUN_ATTEMPT": "1", "CW_TESTS_KEY": KEY_CANARY, "CW_TARGET_TOKEN": "",
+        "CW_TARGET_REPO_ID": str(TARGET_REPO_ID), "CW_MAX_ATTEMPTS": "1",
         **{k: str(v) for k, v in files.items()}, **inputs,
     }  # fmt: skip
     python = str(host / "cw-src/.venv/bin/python")
@@ -305,6 +391,100 @@ def leak_checks(c: Checks, case: str, out: Outcome, canary: str, ran: bool) -> N
         c.that(case, "baseline: test name in private files", f"test_{canary}".encode() in private_bytes(out.private))
 
 
+def wired(c: Checks, fx: Fixture, base: Path, canary: str) -> None:
+    """J0 -> J1 -> J2 as accept.yml chains them: J0 decides from the (fixture) API, J1 runs with
+    J0's outputs and the production ledger code on a local ledger repository, J2 reads that
+    ledger with the App token stand-in and creates the check on the fixture API."""
+    import j0_gate
+    import j2_report
+    import ledger as L
+    import ledger_io
+
+    api = FixtureApi(fx, APP_TOKEN)
+    url = str(fx.ledger)
+
+    def read() -> L.Ledger:
+        io = ledger_io.GitLedger(url, TARGET_REPO_ID)
+        try:
+            found = io.read()
+        finally:
+            io.close()
+        assert found is not None
+        return found
+
+    def j0(label: str) -> dict[str, str]:
+        return j0_gate.decide(api, j0_event(fx, label), "main", True)
+
+    def j2(gate: dict[str, str], run_id: int, out: Outcome | None) -> dict | None:
+        environ = {
+            "ACCEPT_TARGET_REPO": "fixture-org/target", "ACCEPT_TARGET_REPO_ID": str(TARGET_REPO_ID),
+            "ACCEPT_SHA": gate["head-sha"], "ACCEPT_RUN_ID": str(run_id), "ACCEPT_J0_CODE": gate["code"],
+            "ACCEPT_PR_ISSUE": gate["issue"], "ACCEPT_J1_JOB_NAME": "verify",
+            "ACCEPT_J1_JOB_RESULT": "skipped" if out is None else "success",
+            "ACCEPT_J1_RESULT": "" if out is None or out.result is None else json.dumps(out.result),
+            "ACCEPT_LEDGER_URL": "https://github.com/fixture-org/ledger.git",
+            "ACCEPT_CHECK_NAME": "cairnwork-accept", "ACCEPT_NOTE_CHECK_NAME": "cairnwork-accept-note",
+            "ACCEPT_APP_TOKEN": APP_TOKEN,
+        }  # fmt: skip
+        before = len(api.checks)
+        code = j2_report.main(environ, api=api, ledger_url=url)
+        c.that("wired", f"J2 run {run_id} carried out its decision", code == 0)
+        new = api.checks[before:]
+        return new[0] if len(new) == 1 else None
+
+    # J0 on the fixture: the refusals it can see from API metadata
+    for label, code in (("deps", "DEPENDENCY_CHANGE_UNSUPPORTED"), ("two", "NOT_ONE_COMMIT_ON_BASE"),
+                        ("stale", "STALE_HEAD")):  # fmt: skip
+        c.that("wired-j0", f"J0 {label}: {code}", j0(label)["code"] == code)
+
+    # correct fix: J0 lets it through, J1 claims attempt 1 in the ledger, J2 reports success
+    gate = j0("good")
+    c.that("wired-good", "J0 lets it through", gate["run"] == "true" and gate["issue"] == str(ISSUE)
+           and gate["base-sha"] == git(fx.target, "rev-parse", f"{fx.heads['good']}^"))  # fmt: skip
+    out = run_case(fx, base, "wired-good", {**j1_inputs(gate), "CW_RUN_ID": "5001"}, ledger_url=url)
+    r = out.result or {}
+    print(f"case wired-good: done outcome={r.get('outcome')} code={r.get('code')}", flush=True)
+    for line in j1_steps(out.private, canary):
+        print(f"  j1: {line}", flush=True)
+    c.that("wired-good", "VERIFIED", r.get("outcome") == "ran" and r.get("code") == "CORE_VERIFIED")
+    ledger = read()
+    claims = [k for k, v in ledger.claims.items() if v.head_sha == gate["head-sha"]]
+    c.that("wired-good", "claim=1 in the ledger", [n for _v, n in claims] == [1]
+           and gate["head-sha"] in ledger.binds)  # fmt: skip
+    c.that("wired-good", "claim key gone", not (out.private / "ledger-keys").exists())
+    leak_checks(c, "wired-good", out, canary, ran=True)
+    check = j2(gate, 5001, out) or {}
+    c.that("wired-good", "J2 success on the head sha", check.get("conclusion") == "success"
+           and check.get("head_sha") == gate["head-sha"] and check.get("name") == "cairnwork-accept")
+    c.that("wired-good", "verdict written", len(L.counted_verdicts(read(), gate["head-sha"])) == 1)
+
+    # same sha again: PRIOR_VERDICT from the ledger, nothing new claimed; J2 keeps the verdict
+    out = run_case(fx, base, "wired-rerun", {**j1_inputs(j0("good")), "CW_RUN_ID": "5002"}, ledger_url=url)
+    r = out.result or {}
+    print(f"case wired-rerun: done outcome={r.get('outcome')} code={r.get('code')}", flush=True)
+    c.that("wired-rerun", "PRIOR_VERDICT", r.get("outcome") == "rejected" and r.get("code") == "PRIOR_VERDICT")
+    c.that("wired-rerun", "still one claim", len([1 for v in read().claims.values()
+                                                   if v.head_sha == gate["head-sha"]]) == 1)  # fmt: skip
+    c.that("wired-rerun", "core never ran", not (out.private / "core.json").exists())
+    check = j2(gate, 5002, out) or {}
+    c.that("wired-rerun", "J2 success from the prior verdict", check.get("conclusion") == "success")
+
+    # another account's PR (always from a fork): J0 stops it, J1 never runs, J2 reports failure
+    number = int(fx.heads["pr:wrong"])
+    api.prs[number] = {"user": {"login": "stranger"},
+                       "head": {"sha": fx.heads["wrong"], "repo": {"id": FORK_REPO_ID}}}  # fmt: skip
+    gate = j0("wrong")
+    c.that("wired-stranger", "J0 FORK_NOT_SUPPORTED, J1 not scheduled",
+           gate["run"] == "false" and gate["code"] == "FORK_NOT_SUPPORTED")  # fmt: skip
+    check = j2(gate, 5003, None) or {}
+    c.that("wired-stranger", "J2 failure FORK_NOT_SUPPORTED", check.get("conclusion") == "failure"
+           and "FORK_NOT_SUPPORTED" in check.get("output", {}).get("title", ""))  # fmt: skip
+    ledger = read()
+    c.that("wired-stranger", "ledger untouched", fx.heads["wrong"] not in ledger.binds
+           and not any(v.head_sha == fx.heads["wrong"] for v in ledger.claims.values()))  # fmt: skip
+    print("case wired: done", flush=True)
+
+
 def main() -> int:
     seed = os.environ["CW_E2E_SEED"]
     canary = canary_of(seed)
@@ -373,6 +553,13 @@ def main() -> int:
     rejected("ac11-retired", case("ac11-retired", "good", issue=RETIRED_ISSUE), "TASK_RETIRED",
              ledger_checked=False)  # fmt: skip
 
+    # AC14 with a ledger repository named but no claim key: still nothing fetched
+    out = case("ac14-no-key", "good", injected=False, override={"CW_LEDGER_REPO": "fixture-org/ledger"})
+    rejected("ac14-no-key", out, "LEDGER_NOT_CONFIGURED", ledger_checked=False)
+    c.that("ac14-no-key", "nothing fetched", sorted(p.name for p in out.private.iterdir())
+           == ["j1.log", "result.json"])  # fmt: skip
+
+    wired(c, fx, base, canary)
     print(f"J1 e2e: {c.count} checks, {len(c.failed)} failed", flush=True)
     return 1 if c.failed else 0
 

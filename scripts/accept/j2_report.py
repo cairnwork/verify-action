@@ -16,7 +16,10 @@ outputs through ``env:``, never into ``run:``); each is checked for shape before
     ACCEPT_LEDGER_URL        ledger repository (https://github.com/<owner>/<name>.git); empty:
                              LEDGER_NOT_CONFIGURED
     ACCEPT_CHECK_NAME, ACCEPT_NOTE_CHECK_NAME   names of the required and the note check
-    ACCEPT_APP_TOKEN         App installation token (ledger and target repository)
+    ACCEPT_APP_TOKEN         App installation token for the target repository (check runs,
+                             job state)
+    ACCEPT_LEDGER_TOKEN      App installation token for the ledger repository (contents
+                             write there only); empty: ACCEPT_APP_TOKEN is used for both
 
 Prints one line of JSON with fixed values (conclusion, code). Exit 0 when the decision was carried
 out (including "no check"), 1 otherwise; it never creates a success it did not decide on.
@@ -82,11 +85,13 @@ def _is_j1(job: dict, name: str) -> bool:
 def j1_status(api: Api, job_name: str, run_id: int, attempt: int) -> str:
     """FINISHED / RUNNING / UNKNOWN for the J1 job of one attempt of one run (not the run)."""
     status, body = api.call("GET", f"/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100")
-    if status == 404:
-        return T.FINISHED  # no such run or attempt in this repository: nothing is running it
+    # A 404 or no job of that name is UNKNOWN, never FINISHED: a wrong job name or a run this
+    # token cannot see must not close another run's attempt early (verify-action#10, item 1).
     if status != 200 or not isinstance(body, dict) or not isinstance(body.get("jobs"), list):
         return T.UNKNOWN
     states = [j.get("status") for j in body["jobs"] if isinstance(j, dict) and _is_j1(j, job_name)]
+    if not states:
+        return T.UNKNOWN
     return T.FINISHED if all(s == "completed" for s in states) else T.RUNNING
 
 
@@ -161,6 +166,7 @@ def read_env(environ: dict[str, str]) -> dict[str, Any] | None:
         "j1_text": get("ACCEPT_J1_RESULT"), "j1_job_name": get("ACCEPT_J1_JOB_NAME"),
         "ledger_url": get("ACCEPT_LEDGER_URL"), "check_name": get("ACCEPT_CHECK_NAME"),
         "note_check_name": get("ACCEPT_NOTE_CHECK_NAME"), "token": get("ACCEPT_APP_TOKEN"),
+        "ledger_token": get("ACCEPT_LEDGER_TOKEN") or get("ACCEPT_APP_TOKEN"),
     }  # fmt: skip
 
 
@@ -190,13 +196,15 @@ def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None) -> T.Check:
     return T.decide_check(ledger, written=written, **common)
 
 
-def main(environ: dict[str, str]) -> int:
+def main(environ: dict[str, str], api: Any = None, ledger_url: str | None = None) -> int:
+    """``api`` and ``ledger_url`` are for tests only (a fake API, a local ledger repository)."""
     env = read_env(environ)
     if env is None:
         print(json.dumps({"conclusion": None, "code": "ARGS_INVALID"}))
         return 1
-    api = Api(env["repo"], env["token"])
-    io = IO.GitLedger(env["ledger_url"], env["repo_id"], token=env["token"]) if env["ledger_url"] else None
+    api = api or Api(env["repo"], env["token"])
+    url = ledger_url or env["ledger_url"]
+    io = IO.GitLedger(url, env["repo_id"], token=env["ledger_token"]) if url else None
     try:
         check = run(env, api, io)
     finally:
