@@ -463,12 +463,14 @@ def _locked_venv(ws: Workspace) -> str:
         "PATH": "/usr/bin:/bin", "HOME": str(ws.cfg.private / "home"), "UV_NO_CONFIG": "1",
         "UV_CACHE_DIR": str(ws.cfg.private / "uv-cache"), "UV_PYTHON_DOWNLOADS": "never",
     }  # fmt: skip
-    account_python = str(VERIFIER_ROOT / "venv" / "bin" / "python")
+    # the system interpreter, as for the account's own venv (j1_host.sh): a venv made from
+    # another venv links to it, and the sandbox reads only the interpreter's own roots
+    base_python = "/usr/bin/python3"
     steps = (
         [ws.cfg.uv, "export", "--directory", str(deps), "--frozen", "--all-groups", "--all-extras",
          "--no-emit-project", "--no-header", "--no-annotate", "--format", "requirements-txt",
          "--output-file", str(deps / "requirements.txt")],
-        [ws.cfg.uv, "venv", "--quiet", "--python", account_python, str(venv)],
+        [ws.cfg.uv, "venv", "--quiet", "--python", base_python, str(venv)],
         # copy, not link: the cache is owner-only (CW_PRIVATE), as in j1_host.sh
         [ws.cfg.uv, "pip", "install", "--python", str(venv / "bin" / "python"),
          "--require-hashes", "--only-binary", ":all:", "--no-deps", "--link-mode", "copy", "-r",
