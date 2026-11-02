@@ -10,6 +10,8 @@ NOTES_REF="${INPUT_NOTES_REF:-refs/notes/cairnwork}"
 FETCH_NOTES="${INPUT_FETCH_NOTES:-true}"
 PUBLIC_KEY="${INPUT_PUBLIC_KEY:-}"
 CORE_IDENTITY="${INPUT_CORE_IDENTITY:-}"
+POLICY="${INPUT_POLICY:-}"
+POLICY_FILE=""
 CAIRNWORK_REF="${INPUT_CAIRNWORK_REF:-}"
 REQUIRE_WHEN="${INPUT_REQUIRE_WHEN:-always}"
 PR_LABELS="${INPUT_PR_LABELS:-[]}"
@@ -19,11 +21,17 @@ BASE_COMMIT=""
 STATEMENT_SHA256=""
 KEYID=""
 PREDICATE_TYPE=""
+SUBJECT_COMMIT=""
 # Statement and predicate versions this action knows how to check. A newer
 # version is rejected with UNSUPPORTED_PREDICATE_TYPE instead of being read
 # with old field assumptions.
 SUPPORTED_STATEMENT_TYPE="https://in-toto.io/Statement/v1"
-SUPPORTED_PREDICATE_TYPES=("https://cairnwork.github.io/attestation/verified-change/v0.1")
+# v0.2 is an external candidate's receipt (cairnwork #229); cairnwork-attest checks its binding,
+# and in confidential mode (test commit not in the repository) it requires a policy.
+SUPPORTED_PREDICATE_TYPES=(
+  "https://cairnwork.github.io/attestation/verified-change/v0.1"
+  "https://cairnwork.github.io/attestation/verified-change/v0.2"
+)
 
 emit_outputs() {
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
@@ -115,15 +123,51 @@ prepare_keys() {
   fi
 }
 
+# policy: the receiver's own v0.2 policy, as JSON text or an absolute file path outside repo-path.
+# Only its JSON-object shape is checked here; cairnwork-attest reads and checks the rest.
+prepare_policy() {
+  local raw="$1"
+  if [[ "$raw" =~ ^[[:space:]]*\{ ]]; then
+    local old_umask
+    POLICY_FILE="${RUNNER_TEMP:-/tmp}/cairnwork-policy.json"
+    old_umask=$(umask) && umask 077
+    printf "%s" "$raw" > "$POLICY_FILE"
+    umask "$old_umask"
+  else
+    [[ "$raw" == /* ]] || fail "BAD_INPUT" "policy must be JSON text or an absolute path" "ERROR"
+    [[ -f "$raw" ]] || fail "BAD_INPUT" "policy file not found: ${raw}" "ERROR"
+    if is_inside_repo "$raw"; then
+      fail "BAD_INPUT" "policy must not be inside repo-path: ${raw}" "ERROR"
+    fi
+    POLICY_FILE="$raw"
+  fi
+  jq -e 'type == "object"' "$POLICY_FILE" >/dev/null 2>&1 || \
+    fail "BAD_INPUT" "policy is not a JSON object" "ERROR"
+}
+
+# Print the verifier's stderr with a fixed prefix on every line, so nothing it echoes can start
+# a line the runner reads as a workflow command.
+print_verifier_stderr() {
+  local line
+  [[ -s "$1" ]] || return 0
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    printf "cairnwork-attest: %s\n" "$(printf "%s" "$line" | tr -d '\r')"
+  done < "$1"
+}
+
 run_verifier() {
   local bundle="$1" kf last_code="VERIFIER_REJECTED" last_detail="" last_verdict="REJECTED"
   for kf in "${KEY_FILES[@]}"; do
     local cmd=("$VERIFIER_BIN" verify "$bundle" --public-key "$kf" --repo . --candidate "$CANDIDATE" --json)
     [[ -n "$CORE_IDENTITY" ]] && cmd+=(--core-identity "$CORE_IDENTITY")
+    [[ -n "$POLICY_FILE" ]] && cmd+=(--policy "$POLICY_FILE")
+    local err_file="${RUNNER_TEMP:-/tmp}/cairnwork-verify-stderr.txt"
     set +e
-    local output; output=$("${cmd[@]}")
+    local output; output=$("${cmd[@]}" 2>"$err_file")
     local status=$?
     set -e
+    print_verifier_stderr "$err_file"
+    rm -f "$err_file"
     # exit 2 (usage/IO) or non-JSON stdout for one key: remember it, try the next key
     if [[ $status -eq 2 ]]; then
       last_code="VERIFIER_ERROR"; last_detail="verifier returned usage or IO error"; last_verdict="ERROR"
@@ -146,6 +190,11 @@ run_verifier() {
     j_code=$(printf "%s" "$output" | jq -r '.code // empty' 2>/dev/null || true)
     if ! [[ "$j_code" =~ ^[A-Z_]{1,64}$ ]]; then
       j_code="VERIFIER_REJECTED"
+    fi
+    # v0.2 reports a subject that is not the expected candidate as HEAD_MISMATCH (after the
+    # signature check); report it as CANDIDATE_MISMATCH, the code v0.1 uses for the same case.
+    if [[ "$j_code" == "HEAD_MISMATCH" && "$SUBJECT_COMMIT" =~ ^[0-9a-f]{40}$ && "$SUBJECT_COMMIT" != "$CANDIDATE" ]]; then
+      j_code="CANDIDATE_MISMATCH"
     fi
     last_code="$j_code"; last_verdict="REJECTED"
     last_detail=$(printf "%s" "$output" | jq -r 'if .detail == null then "" else (.detail | tostring) end' 2>/dev/null || true)
@@ -170,6 +219,9 @@ REPO_REALPATH="$(realpath .)"
 [[ -n "$PUBLIC_KEY" ]] || fail "BAD_INPUT" "public-key is required" "ERROR"
 if [[ -n "$CAIRNWORK_REF" ]] && ! [[ "$CAIRNWORK_REF" =~ ^[0-9a-f]{40}$ ]]; then
   fail "BAD_INPUT" "cairnwork-ref must be a 40-hex commit SHA" "ERROR"
+fi
+if [[ -n "$POLICY" ]]; then
+  prepare_policy "$POLICY"
 fi
 if [[ -n "$CORE_IDENTITY" ]]; then
   [[ "$CORE_IDENTITY" == /* ]] || fail "BAD_INPUT" "core-identity path must be absolute" "ERROR"
@@ -209,13 +261,13 @@ if [[ -n "$BUNDLE_PATH" ]]; then
   BUNDLE_FILE="$BUNDLE_PATH"
 else
   if [[ "$FETCH_NOTES" == "true" ]]; then
-    if ! git fetch origin "+${NOTES_REF}:${NOTES_REF}" 2>/dev/null; then
+    if ! git fetch -- origin "+${NOTES_REF}:${NOTES_REF}" 2>/dev/null; then
       [[ "$IS_REQUIRED" == "true" ]] && fail "NOTES_FETCH_FAILED" "git fetch origin +${NOTES_REF}:${NOTES_REF} failed" "ERROR"
       skip "NOTES_FETCH_FAILED" "git fetch origin +${NOTES_REF}:${NOTES_REF} failed"
     fi
   fi
   BUNDLE_FILE="${RUNNER_TEMP:-/tmp}/cairnwork-bundle.json"
-  if ! git notes --ref "$NOTES_REF" show "$CANDIDATE" > "$BUNDLE_FILE" 2>/dev/null; then
+  if ! git notes --ref "$NOTES_REF" show -- "$CANDIDATE" > "$BUNDLE_FILE" 2>/dev/null; then
     rm -f "$BUNDLE_FILE"
     [[ "$IS_REQUIRED" == "true" ]] && fail "BUNDLE_MISSING" "no note found on ${NOTES_REF} for candidate ${CANDIDATE}"
     skip "BUNDLE_MISSING" "no note found on ${NOTES_REF} for candidate ${CANDIDATE}"
@@ -266,11 +318,13 @@ fi
 PREDICATE_TYPE="$RAW_PTYPE"
 BASE_COMMIT=$(jq -r '.predicate.base_commit // empty' "$PAYLOAD_FILE" 2>/dev/null || true)
 [[ "$BASE_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "BUNDLE_MALFORMED" "predicate.base_commit is missing or not 40-hex"
+# unauthenticated until the verifier checks the signature; only used to name a rejection
+SUBJECT_COMMIT=$(jq -r 'if (.subject[0].digest.gitCommit|type) == "string" then .subject[0].digest.gitCommit else "" end' "$PAYLOAD_FILE" 2>/dev/null || true)
 
 # 6. Base commit check
 case "$CHECK_BASE" in
   ancestor|true)
-    if ! git merge-base --is-ancestor "$BASE_COMMIT" "$BASE" 2>/dev/null; then
+    if ! git merge-base --is-ancestor -- "$BASE_COMMIT" "$BASE" 2>/dev/null; then
       fail "BASE_NOT_IN_TARGET" "predicate.base_commit ${BASE_COMMIT} is not an ancestor of base ${BASE}"
     fi
     ;;

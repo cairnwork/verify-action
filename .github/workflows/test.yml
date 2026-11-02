@@ -84,17 +84,17 @@ jobs:
             p=$(jq -r .payload "$fx" | base64 -d | jq -c "$1" | base64 -w0)
             jq --arg p "$p" '.payload = $p' "$fx" > "$RUNNER_TEMP/$2.json"
           }
-          mk '.predicateType = "https://cairnwork.github.io/attestation/verified-change/v0.2"' newer-predicate
+          mk '.predicateType = "https://cairnwork.github.io/attestation/verified-change/v0.3"' newer-predicate
           mk '._type = "https://in-toto.io/Statement/v0.1"' old-statement
           # line breaks, spaces, non-ASCII and over 200 characters: exercises the cleaning and the cap
           mk '.predicateType = ("https://evil.example/a b\n\r%0A::error::x é" + ("z" * 300))' messy-predicate
           mk '.predicateType = 5' nonstring-predicate  # cleaned value is empty: the placeholder path
-          # correctly signed bundles under a throwaway key: v0.1 must verify, v0.2 must still be refused
+          # correctly signed bundles under a throwaway key: v0.1 must verify, v0.3 must still be refused
           openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/test-key.pem"
           openssl pkey -in "$RUNNER_TEMP/test-key.pem" -pubout -out "$RUNNER_TEMP/test-pub.pem"
           scripts/test-resign.sh "$fx" '.' "$RUNNER_TEMP/signed-v01.json" "$RUNNER_TEMP/test-key.pem"
-          scripts/test-resign.sh "$fx" '.predicateType = "https://cairnwork.github.io/attestation/verified-change/v0.2"' \
-            "$RUNNER_TEMP/signed-v02.json" "$RUNNER_TEMP/test-key.pem"
+          scripts/test-resign.sh "$fx" '.predicateType = "https://cairnwork.github.io/attestation/verified-change/v0.3"' \
+            "$RUNNER_TEMP/signed-v03.json" "$RUNNER_TEMP/test-key.pem"
 
       - name: Newer predicate version
         id: test_newer_predicate
@@ -162,11 +162,11 @@ jobs:
           cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
 
       - name: Signed newer version under a test key
-        id: test_signed_v02
+        id: test_signed_v03
         uses: ./
         continue-on-error: true
         with:
-          bundle-path: ${{ runner.temp }}/signed-v02.json
+          bundle-path: ${{ runner.temp }}/signed-v03.json
           public-key: ${{ runner.temp }}/test-pub.pem
           candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
@@ -195,10 +195,10 @@ jobs:
           # the re-signing is sound: the same key and method verify an unchanged v0.1 statement
           test "${{ steps.test_signed_v01.outcome }}" = "success"
           test "${{ steps.test_signed_v01.outputs.verdict }}" = "VERIFIED"
-          # so a validly signed v0.2 is refused for its version, not its signature
-          test "${{ steps.test_signed_v02.outcome }}" = "failure"
-          test "${{ steps.test_signed_v02.outputs.verdict }}" = "REJECTED"
-          test "${{ steps.test_signed_v02.outputs.code }}" = "UNSUPPORTED_PREDICATE_TYPE"
+          # so a validly signed v0.3 is refused for its version, not its signature
+          test "${{ steps.test_signed_v03.outcome }}" = "failure"
+          test "${{ steps.test_signed_v03.outputs.verdict }}" = "REJECTED"
+          test "${{ steps.test_signed_v03.outputs.code }}" = "UNSUPPORTED_PREDICATE_TYPE"
 
       - name: Skip path verification
         id: test_skip_path
@@ -243,7 +243,8 @@ jobs:
           test "${{ steps.test_notes_path.outputs.verdict }}" = "VERIFIED"
           test "${{ steps.test_notes_path.outputs.code }}" = "OK"
 
-      # Notes fetch failure relies on cairnwork/demo-target having no refs/notes/cairnwork.
+      # Notes fetch failure uses a notes ref cairnwork/demo-target does not have (it has
+      # refs/notes/cairnwork now, so fetching that ref no longer fails).
       - name: Clean up local note before notes fetch failure test
         run: |
           cd target
@@ -263,6 +264,7 @@ jobs:
           candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
           base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
           repo-path: target
+          notes-ref: refs/notes/cairnwork-selftest-absent
           fetch-notes: 'true'
           require-when: always
           cairnwork-ref: '5819a8c56e19fb32d597f8213a9961f46c3307d4'
@@ -513,3 +515,257 @@ jobs:
           test "${{ steps.test_cairnwork_ref_predates_json.outcome }}" = "failure"
           test "${{ steps.test_cairnwork_ref_predates_json.outputs.verdict }}" = "ERROR"
           test "${{ steps.test_cairnwork_ref_predates_json.outputs.code }}" = "VERIFIER_ERROR"
+
+      # v0.2 receipt (an external candidate checked with deferred tests). fixtures/v02-demo was
+      # made once with cairnwork 36b5692 (its own e2e flow, under a throwaway key whose private
+      # half was not kept): bundle.json, its public key, the receiver policy, and repo.bundle with
+      # base (main), head (cand) and the test commit (tests).
+      - name: Prepare v0.2 fixture repositories
+        id: prepare_v02
+        run: |
+          fx="$GITHUB_WORKSPACE/fixtures/v02-demo"
+          # full mode: the test commit is in the repository; confidential mode: only base and head
+          git init -q v02-full
+          git -C v02-full fetch -q -- "$fx/repo.bundle" 'refs/heads/*:refs/fixture/*'
+          git init -q v02-conf
+          git -C v02-conf fetch -q -- "file://$GITHUB_WORKSPACE/v02-full" \
+            refs/fixture/main:refs/fixture/main refs/fixture/cand:refs/fixture/cand
+          if git -C v02-conf cat-file -e -- 'e818bda98526a1347d7116821f8ba6d5bb5e503a^{commit}' 2>/dev/null; then
+            echo "test commit present in the confidential-mode repository"; exit 1
+          fi
+          openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/v02-other.pem"
+          openssl pkey -in "$RUNNER_TEMP/v02-other.pem" -pubout -out "$RUNNER_TEMP/v02-other.pub.pem"
+          jq '.test_commit = "16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d"' "$fx/policy.json" > "$RUNNER_TEMP/v02-policy-other-tests.json"
+          echo '[]' > "$RUNNER_TEMP/v02-policy-array.json"
+          {
+            echo "inline<<EOF"
+            cat "$fx/policy.json"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: v0.2 full mode without policy
+        id: test_v02_full
+        uses: ./
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/v02-demo/public-key.pem
+          candidate: '4a1422b33516ce6c8ae38aec59b4bf5dc86925ae'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-full
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: v0.2 confidential mode with policy file
+        id: test_v02_conf_policy
+        uses: ./
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/v02-demo/public-key.pem
+          policy: ${{ github.workspace }}/fixtures/v02-demo/policy.json
+          candidate: '4a1422b33516ce6c8ae38aec59b4bf5dc86925ae'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-conf
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: v0.2 confidential mode with inline policy
+        id: test_v02_conf_inline
+        uses: ./
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/v02-demo/public-key.pem
+          policy: ${{ steps.prepare_v02.outputs.inline }}
+          candidate: '4a1422b33516ce6c8ae38aec59b4bf5dc86925ae'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-conf
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: v0.2 confidential mode without policy
+        id: test_v02_conf_no_policy
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/v02-demo/public-key.pem
+          candidate: '4a1422b33516ce6c8ae38aec59b4bf5dc86925ae'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-conf
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: v0.2 other candidate
+        id: test_v02_candidate
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/v02-demo/public-key.pem
+          policy: ${{ github.workspace }}/fixtures/v02-demo/policy.json
+          candidate: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-conf
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: v0.2 other public key
+        id: test_v02_wrong_key
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ runner.temp }}/v02-other.pub.pem
+          policy: ${{ github.workspace }}/fixtures/v02-demo/policy.json
+          candidate: '4a1422b33516ce6c8ae38aec59b4bf5dc86925ae'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-conf
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: v0.2 policy pins other tests
+        id: test_v02_policy_tests
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/v02-demo/public-key.pem
+          policy: ${{ runner.temp }}/v02-policy-other-tests.json
+          candidate: '4a1422b33516ce6c8ae38aec59b4bf5dc86925ae'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-conf
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: v0.2 policy not an object
+        id: test_v02_policy_array
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/v02-demo/public-key.pem
+          policy: ${{ runner.temp }}/v02-policy-array.json
+          candidate: '4a1422b33516ce6c8ae38aec59b4bf5dc86925ae'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-conf
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: v0.1 receipt under a policy
+        id: test_v01_policy
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/demo-target-pr4/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/demo-target-pr4/public-key.pem
+          policy: ${{ github.workspace }}/fixtures/v02-demo/policy.json
+          candidate: '7cd79ab8ac46ed466a345fa6e4de315e20f6f78d'
+          base: '0c484d9eaeb7afdb29d542c09094770ed6f728e6'
+          repo-path: target
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: Assert v0.2 verification
+        run: |
+          for s in "${{ steps.test_v02_full.outputs.verdict }}" "${{ steps.test_v02_conf_policy.outputs.verdict }}" \
+                   "${{ steps.test_v02_conf_inline.outputs.verdict }}"; do
+            test "$s" = "VERIFIED"
+          done
+          test "${{ steps.test_v02_full.outputs.code }}" = "OK"
+          test "${{ steps.test_v02_full.outputs.predicate-type }}" = "https://cairnwork.github.io/attestation/verified-change/v0.2"
+          expected_sha=$(jq -r .payload "$GITHUB_WORKSPACE/fixtures/v02-demo/bundle.json" | base64 -d | sha256sum | awk '{print $1}')
+          test "${{ steps.test_v02_conf_policy.outputs.statement-sha256 }}" = "$expected_sha"
+          # confidential mode refuses without the receiver's policy
+          test "${{ steps.test_v02_conf_no_policy.outcome }}" = "failure"
+          test "${{ steps.test_v02_conf_no_policy.outputs.verdict }}" = "REJECTED"
+          test "${{ steps.test_v02_conf_no_policy.outputs.code }}" = "POLICY_REQUIRED"
+          test "${{ steps.test_v02_candidate.outcome }}" = "failure"
+          test "${{ steps.test_v02_candidate.outputs.verdict }}" = "REJECTED"
+          test "${{ steps.test_v02_candidate.outputs.code }}" = "CANDIDATE_MISMATCH"
+          test "${{ steps.test_v02_wrong_key.outcome }}" = "failure"
+          test "${{ steps.test_v02_wrong_key.outputs.code }}" = "SIGNATURE_INVALID"
+          test "${{ steps.test_v02_policy_tests.outcome }}" = "failure"
+          test "${{ steps.test_v02_policy_tests.outputs.verdict }}" = "REJECTED"
+          test "${{ steps.test_v02_policy_tests.outputs.code }}" = "TEST_SOURCE_MISMATCH"
+          test "${{ steps.test_v02_policy_array.outcome }}" = "failure"
+          test "${{ steps.test_v02_policy_array.outputs.verdict }}" = "ERROR"
+          test "${{ steps.test_v02_policy_array.outputs.code }}" = "BAD_INPUT"
+          # a policy expects bound tests: a v0.1 receipt fails under one
+          test "${{ steps.test_v01_policy.outcome }}" = "failure"
+          test "${{ steps.test_v01_policy.outputs.verdict }}" = "REJECTED"
+          test "${{ steps.test_v01_policy.outputs.code }}" = "TEST_SOURCE_MISMATCH"
+
+      - name: Copy policy into repo path
+        run: cp "$GITHUB_WORKSPACE/fixtures/v02-demo/policy.json" v02-conf/policy-in-repo.json
+
+      - name: Policy inside repo-path
+        id: test_policy_inside_repo
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/v02-demo/public-key.pem
+          policy: ${{ github.workspace }}/v02-conf/policy-in-repo.json
+          candidate: '4a1422b33516ce6c8ae38aec59b4bf5dc86925ae'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-conf
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: Policy relative path
+        id: test_policy_relative
+        uses: ./
+        continue-on-error: true
+        with:
+          bundle-path: ${{ github.workspace }}/fixtures/v02-demo/bundle.json
+          public-key: ${{ github.workspace }}/fixtures/v02-demo/public-key.pem
+          # exists relative to repo-path and lies outside it: only the absolute-path rule refuses it
+          policy: ../fixtures/v02-demo/policy.json
+          candidate: '4a1422b33516ce6c8ae38aec59b4bf5dc86925ae'
+          base: '16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d'
+          repo-path: v02-conf
+          require-when: always
+          cairnwork-ref: '36b569240b896878c23153927c27781755af9e3c'
+
+      - name: Assert policy path checks
+        run: |
+          test "${{ steps.test_policy_inside_repo.outcome }}" = "failure"
+          test "${{ steps.test_policy_inside_repo.outputs.verdict }}" = "ERROR"
+          test "${{ steps.test_policy_inside_repo.outputs.code }}" = "BAD_INPUT"
+          test "${{ steps.test_policy_relative.outcome }}" = "failure"
+          test "${{ steps.test_policy_relative.outputs.verdict }}" = "ERROR"
+          test "${{ steps.test_policy_relative.outputs.code }}" = "BAD_INPUT"
+
+      # verify.sh run directly against a stub verifier: the stub writes stderr lines that would be
+      # workflow commands, and answers HEAD_MISMATCH for a subject equal to the candidate.
+      - name: Verifier stderr and HEAD_MISMATCH with a stub verifier
+        run: |
+          stub="$RUNNER_TEMP/stub-attest"
+          cat > "$stub" <<'STUB'
+          #!/usr/bin/env bash
+          c=:: h='##['
+          printf '%swarning::stub one\n%swarning]stub two\n   %swarning::stub three\n' "$c" "$h" "$c" >&2
+          printf '%s\n' '{"ok":false,"code":"HEAD_MISMATCH","detail":"stub"}'
+          exit 1
+          STUB
+          chmod +x "$stub"
+          out="$RUNNER_TEMP/stub-output.txt"
+          log="$RUNNER_TEMP/stub-log.txt"
+          : > "$out"
+          set +e
+          (cd v02-full && env GITHUB_OUTPUT="$out" CAIRNWORK_ATTEST_BIN="$stub" \
+            INPUT_BUNDLE_PATH="$GITHUB_WORKSPACE/fixtures/v02-demo/bundle.json" \
+            INPUT_PUBLIC_KEY="$GITHUB_WORKSPACE/fixtures/v02-demo/public-key.pem" \
+            INPUT_CANDIDATE='4a1422b33516ce6c8ae38aec59b4bf5dc86925ae' INPUT_BASE='16495b9bb3a9b80fbcaa3cef77dcf53e0b61441d' INPUT_REQUIRE_WHEN=always \
+            bash "$GITHUB_WORKSPACE/scripts/verify.sh") > "$log" 2>&1
+          status=$?
+          set -e
+          sed 's/^/log| /' "$log"
+          test "$status" -ne 0
+          grep -qx 'verdict=REJECTED' "$out"
+          # subject equals the candidate: HEAD_MISMATCH is not renamed CANDIDATE_MISMATCH
+          grep -qx 'code=HEAD_MISMATCH' "$out"
+          # every stub stderr line arrives behind the fixed prefix
+          test "$(grep -c '^cairnwork-attest: ' "$log")" -eq 3
+          # no other line starts (after leading spaces) with :: or ##[ ; only the action's own error
+          bad=$(sed 's/^[[:space:]]*//' "$log" | grep -E '^(::|##\[)' | grep -v '^::error::HEAD_MISMATCH: ' || true)
+          test -z "$bad"
