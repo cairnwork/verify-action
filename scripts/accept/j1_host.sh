@@ -15,6 +15,9 @@
 #    with pytest installed from hash-pinned wheels (verifier-requirements.txt).
 # 6. The verifiers' run root on a size-capped tmpfs (the write-volume limit).
 # 7. A host firewall rule: no outbound traffic for the verifier account's uid (IPv4 and IPv6).
+# 8. No other-writable directory or regular file left on the host's file systems except sticky
+#    shared directories (/tmp kind): the hosted image ships 0777 trees (/opt, /usr/share,
+#    /usr/local/bin, ...) the verifier account could otherwise change.
 set -eu
 
 [ "${RUNNER_ENVIRONMENT:-}" = "github-hosted" ] || { echo "not a GitHub-hosted runner" >&2; exit 1; }
@@ -72,5 +75,10 @@ sudo -n mount -t tmpfs -o "size=4g,mode=2750,uid=$(id -u),gid=$gid,nosuid,nodev"
 uid="$(id -u cairnwork-verifier)"
 for table in iptables ip6tables; do
   sudo -n "$table" -I OUTPUT -m owner --uid-owner "$uid" -j REJECT
+done
+for fs in / /dev /run /mnt; do
+  [ -d "$fs" ] || continue
+  sudo -n find "$fs" -xdev \( -type d ! -perm -1000 -o -type f \) -perm -0002 -print0 \
+    | sudo -n xargs -0 -r chmod o-w
 done
 echo "host setup done"

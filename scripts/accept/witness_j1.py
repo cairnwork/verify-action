@@ -14,8 +14,10 @@ a baseline that sees nothing is a failure, like a breach. What is checked comes 
   allocation and many threads fail, a small one succeeds, and outside the scope both succeed.
 - ``post_run_paths``: the interpreters, scripts and directories J1 uses after the candidate ran
   exist and the account cannot write them.
-- ``writable``: every directory (to depth 3) the account can write is on ``ALLOWED_WRITABLE``;
-  the account must find ``/tmp`` (the baseline).
+- ``writable``: the directories and regular files (to depth 3) the account can write are sticky
+  shared directories (``/tmp`` kind: the account can add its own entries but not change others')
+  and nothing else; the account must find ``/tmp`` (the baseline). ``j1_host.sh`` removes
+  other-write from every non-sticky directory and file on the host's file systems.
 - ``sandbox_run_root``: as the account inside Cairnwork's own bwrap policy with a writable run
   root (as J1's verifiers run): a write inside the run root lands on the host; writes to host
   places the account could write without the sandbox do not reach the host; the private directory's canary is
@@ -49,18 +51,14 @@ EXPECTED = (
     "sandbox_run_root",
 )
 PROFILE = "cairnwork-bwrap"
-# Directories the account may write on a GitHub-hosted ubuntu-24.04 image. /opt/hostedtoolcache is
-# 0777 there (S0-10): J1 runs nothing from it after the candidate (see post_run_paths).
-ALLOWED_WRITABLE = frozenset(
-    {"/tmp", "/var/tmp", "/dev/shm", "/dev/mqueue", "/run/lock", "/var/crash",
-     "/opt/hostedtoolcache", "/var/lib/php/sessions"}
-)  # fmt: skip
+# The hosted image ships many 0777 trees (/opt, /usr/share, /usr/local/bin, ...); j1_host.sh
+# takes other-write away from all of them, so the only writable places left are sticky ones.
 SKIP_WALK = ("/proc", "/sys", "/dev/pts")
 BIG, SMALL = 7 << 30, 256 << 20  # bytes; J1's MemoryMax is 6G
 MANY, FEW = 3000, 50  # threads; J1's TasksMax is 2048
 
 ACCOUNT_PROBE = r"""
-import json, os, socket, sys
+import json, os, socket, stat, sys
 cfg = json.loads(open(sys.argv[1]).read())
 out = {"connect": None, "writable": [], "post_run": {}}
 try:
@@ -75,7 +73,16 @@ for top in ("/",):
         if depth >= 3:
             dirs[:] = []
         if os.access(root, os.W_OK):
-            out["writable"].append(root)
+            sticky = os.stat(root).st_mode & 0o1000
+            out["writable"].append([root, "sticky" if sticky else "dir"])
+        for name in _files:
+            path = os.path.join(root, name)
+            try:
+                regular = stat.S_ISREG(os.lstat(path).st_mode)
+            except OSError:
+                continue
+            if regular and os.access(path, os.W_OK):
+                out["writable"].append([path, "file"])
 for path in cfg["post_run"]:
     out["post_run"][path] = os.access(path, os.W_OK)
 print(json.dumps(out))
@@ -203,11 +210,15 @@ def observe(private: Path) -> dict[str, Any]:
 
     obs: dict[str, Any] = {}
     try:
-        profiles = Path("/sys/kernel/security/apparmor/profiles").read_text()
+        # root-only file
+        profiles = subprocess.run(
+            ["/usr/bin/sudo", "-n", "/usr/bin/cat", "/sys/kernel/security/apparmor/profiles"],
+            capture_output=True, text=True, check=True, timeout=60,
+        ).stdout  # fmt: skip
         restrict = Path("/proc/sys/kernel/apparmor_restrict_unprivileged_userns").read_text().strip()
         obs["apparmor"] = {"loaded": any(line.startswith(f"{PROFILE} ") for line in profiles.splitlines()),
                            "restricted": restrict == "1"}  # fmt: skip
-    except OSError:
+    except (OSError, subprocess.SubprocessError):
         pass
     try:
         account = pwd.getpwnam(jv.VERIFIER_USER)
@@ -280,10 +291,12 @@ def judge(obs: dict[str, Any], expected_paths: list[str]) -> dict[str, tuple[boo
             out[name] = (not missing and not bad and bool(expected_paths),
                          f"{len(expected_paths)} paths, {len(missing)} unobserved, {len(bad)} failing: {sorted(bad)}")  # fmt: skip
         elif name == "writable":
-            found = set(value)
-            extra = sorted(found - ALLOWED_WRITABLE)
-            out[name] = ("/tmp" in found and not extra,
-                         f"{len(found)} writable, baseline_tmp={'/tmp' in found}, unexpected={extra}")  # fmt: skip
+            entries = [e for e in value if isinstance(e, list) and len(e) == 2]
+            sticky = {path for path, kind in entries if kind == "sticky"}
+            extra = sorted(path for path, kind in entries if kind != "sticky")
+            ok = len(entries) == len(value) and "/tmp" in sticky and not extra
+            out[name] = (ok, f"{len(sticky)} sticky, baseline_tmp={'/tmp' in sticky}, "
+                             f"unexpected={extra[:40]} ({len(extra)})")  # fmt: skip
         elif name == "sandbox_run_root":
             inside = value.get("inside", {})
             writes = inside.get("host_writes", {})

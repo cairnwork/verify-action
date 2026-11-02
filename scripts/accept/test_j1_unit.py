@@ -252,7 +252,7 @@ class WitnessJudge(unittest.TestCase):
             "memory": {"small_in_scope": True, "big_in_scope": False, "big_outside": True},
             "tasks": {"few_in_scope": True, "many_in_scope": False, "many_outside": True},
             "post_run_paths": {p: {"exists": True, "account_writable": False} for p in self.PATHS},
-            "writable": ["/tmp", "/var/tmp", "/dev/shm"],
+            "writable": [["/tmp", "sticky"], ["/var/tmp", "sticky"], ["/dev/shm", "sticky"]],
             "sandbox_run_root": self.sandbox(),
         }
 
@@ -290,7 +290,14 @@ class WitnessJudge(unittest.TestCase):
                 {p: {"exists": True, "account_writable": True} for p in self.PATHS},
                 {p: {"exists": False, "account_writable": False} for p in self.PATHS},
             ],
-            "writable": [["/tmp", "/usr/local/bin"], ["/var/tmp"], []],
+            "writable": [
+                [["/tmp", "sticky"], ["/usr/local/bin", "dir"]],
+                [["/tmp", "sticky"], ["/usr/share/x/y", "file"]],
+                [["/tmp", "dir"]],  # /tmp not sticky
+                [["/var/tmp", "sticky"]],  # baseline lost
+                [["/tmp", "sticky"], "/opt"],  # malformed entry
+                [],
+            ],
             "sandbox_run_root": [
                 self.sandbox(run_root_write=False),
                 {**self.sandbox(), "run_root_landed": False},
