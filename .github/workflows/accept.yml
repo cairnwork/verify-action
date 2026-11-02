@@ -57,6 +57,11 @@ on:
         type: number
         required: false
         default: 1
+      min-protection:
+        description: "Lowest receipt protection level a pass may have: same_process_only, partial_macos, partial, blackbox_macos or blackbox (as Cairnwork's protection.at_least reads them); a level that does not meet it, or an unknown one, fails the check"
+        type: string
+        required: false
+        default: same_process_only
       report-app-client-id:
         description: "Client ID of the customer's report App (creates the required check)"
         type: string
@@ -181,6 +186,7 @@ jobs:
           CW_RUN_ATTEMPT: ${{ github.run_attempt }}
           CW_TARGET_REPO_ID: ${{ github.repository_id }}
           CW_MAX_ATTEMPTS: ${{ inputs.max-attempts }}
+          CW_MIN_PROTECTION: ${{ inputs.min-protection }}  # enforced by J2 at the reader
           CW_TESTS_KEY: ${{ secrets.TESTS_KEY }}
           CW_LEDGER_KEY: ${{ secrets.LEDGER_KEY }}
           CW_TARGET_TOKEN: ${{ github.token }}
@@ -214,8 +220,10 @@ jobs:
           CW_VERIFY_ACTION_SHA: ${{ inputs.verify-action-sha }}
           CW_LEDGER_REPO: ${{ inputs.ledger-repo }}
           CW_OWNER: ${{ github.repository_owner }}
+          CW_MIN_PROTECTION: ${{ inputs.min-protection }}
         run: |
           test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          printf '%s' "$CW_MIN_PROTECTION" | grep -q -x -E 'same_process_only|partial_macos|blackbox_macos|partial|blackbox'
           printf '%s' "$CW_VERIFY_ACTION_SHA" | grep -q -x -E '[0-9a-f]{40}'
           if [ -n "$CW_LEDGER_REPO" ]; then
             printf '%s' "$CW_LEDGER_REPO" | grep -q -x -E '[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}'
@@ -253,7 +261,8 @@ jobs:
           ACCEPT_J1_JOB_RESULT: ${{ needs.verify.result }}
           ACCEPT_J1_RESULT: ${{ needs.verify.outputs.result }}
           ACCEPT_J1_JOB_NAME: verify
-          ACCEPT_LEDGER_URL: ${{ inputs.ledger-repo != '' && (secrets.LEDGER_VERDICT_KEY != '' && format('git@github.com:{0}.git', inputs.ledger-repo) || format('https://github.com/{0}.git', inputs.ledger-repo)) || '' }}
+          ACCEPT_LEDGER_URL: ${{ inputs.ledger-repo != '' && format('git@github.com:{0}.git', inputs.ledger-repo) || '' }}  # SSH form only; without the key J2 reports LEDGER_KEY_MISSING
+          ACCEPT_MIN_PROTECTION: ${{ inputs.min-protection }}
           ACCEPT_CHECK_NAME: cairnwork-accept
           ACCEPT_NOTE_CHECK_NAME: cairnwork-accept-note
           ACCEPT_APP_TOKEN: ${{ steps.app.outputs.token }}

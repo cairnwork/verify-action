@@ -218,6 +218,15 @@ def _add_record(name: str, objtype: str, message: str, target_repo_id: int, bind
     (claims if kind == "claim" else verdicts)[key] = entry
 
 
+def _head_of(message: str) -> str | None:
+    """The head sha a record names, when its message is JSON with a valid ``head_sha``."""
+    try:
+        head = strict_json(message.rstrip("\n")).get("head_sha")
+    except (LedgerUnreadable, AttributeError):
+        return None
+    return head if isinstance(head, str) and is_sha(head) else None
+
+
 def parse_ledger(config_text: str | None, refs: list[tuple[str, str, str]], target_repo_id: int) -> Ledger:
     """``refs``: (ref name, object type, commit message) for every ref under bind/, claim/ and
     verdict/. Raises LedgerUnreadable on a bad config or a target mismatch of the config; a ref or
@@ -237,8 +246,13 @@ def parse_ledger(config_text: str | None, refs: list[tuple[str, str, str]], targ
         except (LedgerUnreadable, KeyError, ValueError, TypeError):
             skipped.append((name[:120], _reason(name, objtype)))
             match = _REF.match(name)
-            if match is not None:  # the name still says which head (and attempt) it belongs to
-                stuck.add(match.group(2) or match.group(4))
+            if match is not None:
+                # a bind name carries its head sha (group 2); for claim/ and verdict/ names group 4
+                # is the tests version, not a head sha, so the head comes from the record itself
+                # when its JSON still parses and names one (e.g. name and content disagree)
+                head = match.group(2) or _head_of(message)
+                if head is not None:
+                    stuck.add(head)
                 if match.group(3) == "claim":
                     lost.add((match.group(4), int(match.group(5))))
             else:  # an odd name that still carries a head sha: hold that head, fail closed

@@ -150,6 +150,20 @@ class Counting(unittest.TestCase):
         led = ledger(claim(8, sha=SHA2))
         self.assertIsNone(L.j1_claim_number(led, VER, 5))  # 8 >= 5 + 3: used up
 
+    def test_lost_claim_number_is_not_reused(self):
+        # an unclassifiable claim ref still uses its number: max_n counts it, the next is 2
+        led = ledger(("refs/tags/claim/%s/1" % VER, "commit", "not json\n"))
+        self.assertEqual(L.max_n(led, VER), 1)
+        self.assertEqual(L.j1_claim_number(led, VER, 2), 2)
+
+    def test_skipped_claim_holds_the_head_its_record_names_not_the_tests_version(self):
+        bad = claim(1, sha=SHA2)
+        mismatched = (bad[0], bad[1], bad[2].replace('"n":1', '"n":9'))  # name and content disagree
+        led = ledger(mismatched)
+        self.assertEqual(led.stuck, frozenset({SHA2}))
+        self.assertNotIn(VER, led.stuck)
+        self.assertEqual(ledger(("refs/tags/claim/%s/1" % VER, "commit", "x\n")).stuck, frozenset())
+
     def test_versions_are_separate(self):
         led = ledger(claim(1))
         self.assertIsNone(L.j1_claim_number(led, VER, 1))
@@ -266,12 +280,89 @@ class Table(unittest.TestCase):
         self.assertEqual(self.decide(led, j1(j1_result("rejected", code="PRIOR_VERDICT"))).conclusion, T.SUCCESS)
         # J1 broke before anything (no claim of ours): report the sha's counted verdict
         self.assertEqual(self.decide(led, j1(None, success=False, attempt=None)).conclusion, T.SUCCESS)
-        # a J0 refusal does not hide an earlier verdict either
-        self.assertEqual(self.decide(led, j1(None, success=False), j0="NO_TASK").conclusion, T.SUCCESS)
 
     def test_two_counted_verdicts_one_fails(self):
         led = ledger(claim(1), verdict(1), claim(2, k=4), verdict(2, "FAILED", k=5))
         check = self.decide(led, j1(j1_result("rejected", code="PRIOR_VERDICT")))
+        self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.PRIOR_VERDICT))
+
+    def test_protection_levels_match_cairnwork_at_least(self):
+        import redact_result as R
+        self.assertTrue(set(T.PROTECTION_LEVELS) <= set(R.PROTECTIONS.values()))
+        yes = {("same_process_only", "same_process_only"), ("partial", "partial"), ("blackbox", "partial"),
+               ("blackbox", "blackbox_macos"), ("partial", "partial_macos"), ("blackbox_macos", "partial_macos"),
+               ("blackbox_macos", "blackbox_macos"), ("partial_macos", "partial_macos"), ("partial", "same_process_only"),
+               ("blackbox_macos", "same_process_only"), ("blackbox", "partial_macos"), ("partial_macos", "same_process_only"),
+               ("blackbox", "same_process_only"), ("blackbox", "blackbox_macos"), ("blackbox", "partial")}
+        for level in T.PROTECTION_LEVELS:
+            for minimum in T.PROTECTION_LEVELS:
+                self.assertEqual(T.meets_minimum(level, minimum), (level, minimum) in yes or level == minimum,
+                                 (level, minimum))
+        # partial does not meet a blackbox minimum; a macOS grade does not meet a Linux minimum
+        self.assertFalse(T.meets_minimum("partial", "blackbox_macos"))
+        self.assertFalse(T.meets_minimum("blackbox_macos", "blackbox"))
+        self.assertFalse(T.meets_minimum("blackbox_macos", "partial"))
+        for bad in ("none", "", "mystery", "unrecognized"):
+            self.assertFalse(T.meets_minimum(bad, "same_process_only"))
+            self.assertFalse(T.meets_minimum("blackbox", bad))
+
+    def test_min_protection(self):
+        j1v = j1(j1_result("rejected", code="PRIOR_VERDICT"))
+
+        def run(level, minimum):
+            led = ledger(bind(), claim(1), verdict(1, protection=level))
+            return T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1v, written={}, min_protection=minimum)
+
+        low = run("partial", "blackbox_macos")
+        self.assertEqual((low.conclusion, low.code), (T.FAILURE, T.PROTECTION_BELOW_MINIMUM))
+        self.assertEqual((low.protection, low.min_protection), ("partial", "blackbox_macos"))
+        for level, minimum in (("same_process_only", "same_process_only"), ("blackbox", "partial"),
+                               ("blackbox", "blackbox_macos")):
+            self.assertEqual(run(level, minimum).conclusion, T.SUCCESS, (level, minimum))
+        self.assertEqual(run("same_process_only", "partial").code, T.PROTECTION_BELOW_MINIMUM)
+        # applied per verdict: one low verdict among two VERIFIED fails
+        led = ledger(bind(), claim(1), verdict(1, protection="blackbox"), claim(2, k=4, sha=SHA1),
+                     verdict(2, protection="same_process_only", k=5))
+        check = T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1v, written={}, min_protection="partial")
+        self.assertEqual(check.code, T.PROTECTION_BELOW_MINIMUM)
+        # per verdict under the partial order, not "lowest by a line, then compare"
+        led = ledger(bind(), claim(1), verdict(1, protection="partial"), claim(2, k=4, sha=SHA1),
+                     verdict(2, protection="blackbox_macos", k=5))
+        check = T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1v, written={},
+                               min_protection="blackbox_macos")
+        self.assertEqual((check.conclusion, check.code), (T.FAILURE, T.PROTECTION_BELOW_MINIMUM))
+        self.assertEqual(check.protection, "partial")
+        # the default is same_process_only
+        self.assertEqual(self.decide(ledger(bind(), claim(1), verdict(1)), j1v).conclusion, T.SUCCESS)
+
+    def test_min_protection_unknown_level_fails_closed(self):
+        led = ledger(bind(), claim(1), verdict(1, protection="mystery"))
+        check = self.decide(led, j1(j1_result("rejected", code="PRIOR_VERDICT")))
+        self.assertEqual((check.conclusion, check.code), (T.FAILURE, T.PROTECTION_BELOW_MINIMUM))
+        self.assertFalse(T.meets_minimum("blackbox", "mystery"))
+
+    def test_this_runs_refusal_wins_over_an_earlier_verdict(self):
+        for code in ("TASK_NOT_ASSIGNED", "PROTECTED_PATH", "OUT_OF_SCOPE"):
+            led = ledger(bind(), claim(1), verdict(1))  # earlier VERIFIED for the same sha
+            check = self.decide(led, j1(j1_result("rejected", code=code)))
+            self.assertEqual((check.conclusion, check.code, check.prior_verdict), (T.FAILURE, code, True))
+        # a head that moved on: no required check, and the earlier verdict is not promoted either
+        check = self.decide(ledger(bind(), claim(1), verdict(1)), j1(j1_result("rejected", code="STALE_HEAD")))
+        self.assertEqual((check.conclusion, check.code), (None, "STALE_HEAD"))
+
+    def test_j0_refusal_wins_over_an_earlier_verdict(self):
+        for code in ("WRONG_TARGET_BRANCH", "FORK_NOT_SUPPORTED", "NO_TASK"):
+            led = ledger(bind(), claim(1), verdict(1))
+            check = self.decide(led, j1(None, success=False, attempt=None), j0=code)
+            self.assertEqual((check.conclusion, check.code, check.prior_verdict), (T.FAILURE, code, True))
+        for code in T.NO_CHECK_J0:  # no check at all, as before
+            check = self.decide(ledger(bind(), claim(1), verdict(1)), j1(None, success=False), j0=code)
+            self.assertIsNone(check.conclusion)
+
+    def test_prior_failed_then_verified_run_is_unchanged(self):
+        # an earlier FAILED plus this run's VERIFIED: the sha still fails (PRIOR_VERDICT), as before
+        led = ledger(claim(1), verdict(1, "FAILED"), claim(2, k=4, run_id=100), verdict(2, k=5))
+        check = self.decide(led, j1(j1_result()), written={(VER, 2): L.CREATED})
         self.assertEqual((check.conclusion, check.code), (T.FAILURE, L.PRIOR_VERDICT))
 
     def test_row4_own_claim_written(self):

@@ -300,6 +300,19 @@ class J1KeyOrder(unittest.TestCase):
         self.assertEqual(self.events, ["check", "close"])
         self.assertEqual((result["outcome"], result["code"]), ("rejected", L.PRIOR_VERDICT))
 
+    def test_this_runs_refusal_comes_before_the_ledger_verdict(self):
+        # a sha with an earlier verdict (the ledger would say PRIOR_VERDICT) still reports what
+        # this run's candidate did wrong: the prechecks run before the ledger read
+        for fake, code in (("precheck_scope", "PROTECTED_PATH"), ("precheck_scope", "OUT_OF_SCOPE"),
+                           ("precheck_public", "TESTS_ALREADY_PUBLIC")):
+            def refuse(ws, code=code):
+                raise jv.Reject(code)
+
+            self.events.clear()
+            result = self.run_j1(OrderLedger(self.events, check=L.PRIOR_VERDICT), **{fake: refuse})
+            self.assertEqual((result["outcome"], result["code"]), ("rejected", code))
+            self.assertEqual(self.events, ["close"])  # the ledger was never asked
+
     def test_closed_on_a_claim_refusal(self):
         result = self.run_j1(OrderLedger(self.events, claim=(None, L.ATTEMPT_PENDING)))
         self.assertEqual(self.events, ["check", "claim", "close"])
@@ -373,7 +386,7 @@ class J2Wiring(LocalLedger):
         finally:
             io_.close()
 
-    def j2(self, api, *, run_id=200, result="", job="success", j0=""):
+    def j2(self, api, *, run_id=200, result="", job="success", j0="", extra=None):
         environ = {
             "ACCEPT_TARGET_REPO": "org/target", "ACCEPT_TARGET_REPO_ID": str(REPO_ID),
             "ACCEPT_SHA": HEAD, "ACCEPT_RUN_ID": str(run_id), "ACCEPT_J0_CODE": j0,
@@ -381,6 +394,7 @@ class J2Wiring(LocalLedger):
             "ACCEPT_J1_JOB_NAME": "verify", "ACCEPT_LEDGER_URL": "https://github.com/org/ledger.git",
             "ACCEPT_CHECK_NAME": "cairnwork-accept", "ACCEPT_NOTE_CHECK_NAME": "cairnwork-accept-note",
             "ACCEPT_APP_TOKEN": "dummy-app-token", "ACCEPT_LEDGER_KEY": self.verdict_key,
+            **(extra or {}),
         }  # fmt: skip
         buf = io.StringIO()
         with redirect_stdout(buf):
@@ -390,7 +404,7 @@ class J2Wiring(LocalLedger):
     def ran(self, code, status, consumed, run_id=100):
         return T.render_j1({"schema": T.J1_SCHEMA, "run_id": run_id, "j1_attempt": 1,
                             "head_sha": HEAD, "outcome": "ran", "code": code, "status": status,
-                            "protection": "none", "tests_consumed": consumed})  # fmt: skip
+                            "protection": "same_process_only", "tests_consumed": consumed})  # fmt: skip
 
     def test_unknown_job_state_is_not_closed_as_lost(self):
         self.assertEqual(self.j1(run_id=100), (1, None))
@@ -419,6 +433,17 @@ class J2Wiring(LocalLedger):
         code, printed = self.j2(api, run_id=100, result=result)
         self.assertEqual(printed["conclusion"], T.SUCCESS)  # J2's reader (signature check): still readable
         self.assertIn("Ledger records skipped: 3.", api.checks[-1]["output"]["summary"])
+
+    def test_min_protection_input_is_checked_and_enforced(self):
+        self.assertEqual(self.j1(run_id=100), (1, None))
+        api = JobsApi((404, None))
+        code, printed = self.j2(api, run_id=100, result=self.ran("CORE_VERIFIED", "VERIFIED", True),
+                                extra={"ACCEPT_MIN_PROTECTION": "partial"})
+        self.assertEqual((printed["conclusion"], printed["code"]), (T.FAILURE, "PROTECTION_BELOW_MINIMUM"))
+        title = api.checks[-1]["output"]["title"]
+        self.assertIn("protection same_process_only", title)
+        self.assertIn("minimum partial", title)
+        self.assertEqual(self.j2(JobsApi((404, None)), run_id=100, extra={"ACCEPT_MIN_PROTECTION": "bogus"})[0], 1)
 
     def test_j1_result_carries_the_skipped_count(self):
         git("update-ref", "refs/tags/claim/odd", "refs/heads/main", cwd=self.remote)
@@ -548,6 +573,12 @@ class Workflow(unittest.TestCase):
     def setUp(self):
         self.text = WORKFLOW.read_text()
         self.jobs = jobs_of(self.text)
+
+    def test_min_protection_input_reaches_both_jobs_and_no_https_ledger_url(self):
+        self.assertRegex(self.text, r"(?m)^      min-protection:\n(?:.*\n)*?        default: same_process_only$")
+        self.assertIn("CW_MIN_PROTECTION: ${{ inputs.min-protection }}", self.jobs["verify"])
+        self.assertIn("ACCEPT_MIN_PROTECTION: ${{ inputs.min-protection }}", self.jobs["report"])
+        self.assertNotIn("https://github.com", self.jobs["report"])
 
     def test_three_jobs(self):
         self.assertEqual(list(self.jobs), ["gate", "verify", "report"])

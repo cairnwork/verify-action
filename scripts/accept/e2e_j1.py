@@ -648,8 +648,8 @@ def main() -> int:
     c.that("ac1-ac5-wrong", "consumed", r.get("tests_consumed") is True)
     leak_checks(c, "ac1-ac5-wrong", out, canary, ran=True)
 
-    # AC2: refused before any claim
-    rejected("ac2-scope", case("ac2-scope", "scope"), "OUT_OF_SCOPE", ledger_checked=True)
+    # AC2: refused before any claim; the scope and public prechecks run before the ledger read
+    rejected("ac2-scope", case("ac2-scope", "scope"), "OUT_OF_SCOPE", ledger_checked=False)
     rejected("ac2-deps", case("ac2-deps", "deps"), "DEPENDENCY_CHANGE_UNSUPPORTED", ledger_checked=False)
     rejected("ac2-two-commits", case("ac2-two-commits", "two"), "BASE_NOT_IN_TARGET", ledger_checked=False)
     out = case("ac2-not-on-base", "two", override={"CW_BASE_SHA": fx.main})
@@ -657,9 +657,9 @@ def main() -> int:
     rejected("stale-head", case("stale-head", "stale"), "STALE_HEAD", ledger_checked=False)
 
     # AC10: a test blob already in the PR head, or on the target branch
-    rejected("ac10-in-head", case("ac10-in-head", "leak"), "TESTS_ALREADY_PUBLIC", ledger_checked=True)
+    rejected("ac10-in-head", case("ac10-in-head", "leak"), "TESTS_ALREADY_PUBLIC", ledger_checked=False)
     out = case("ac10-on-target", "good", issue=PUBLIC_ISSUE)
-    rejected("ac10-on-target", out, "TESTS_ALREADY_PUBLIC", ledger_checked=True)
+    rejected("ac10-on-target", out, "TESTS_ALREADY_PUBLIC", ledger_checked=False)
 
     # AC11: author not allowed; retired task
     out = case("ac11-author", "good", author="someone-else")
