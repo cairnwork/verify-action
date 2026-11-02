@@ -525,6 +525,22 @@ class J2Wiring(LocalLedger):
             self.assertIn("LEDGER_KEY_MISSING", handle.read())
         self.assertEqual(tags(), before)  # no verdict written
 
+    def test_ledger_url_from_env_without_key_is_refused(self):
+        environ = {
+            "ACCEPT_TARGET_REPO": "org/target", "ACCEPT_TARGET_REPO_ID": str(REPO_ID),
+            "ACCEPT_SHA": HEAD, "ACCEPT_RUN_ID": "200", "ACCEPT_J0_CODE": "",
+            "ACCEPT_PR_ISSUE": "", "ACCEPT_J1_JOB_RESULT": "failure", "ACCEPT_J1_RESULT": "",
+            "ACCEPT_J1_JOB_NAME": "verify", "ACCEPT_LEDGER_URL": "https://github.com/org/ledger.git",
+            "ACCEPT_CHECK_NAME": "cairnwork-accept", "ACCEPT_NOTE_CHECK_NAME": "cairnwork-accept-note",
+            "ACCEPT_APP_TOKEN": "target-app-token",
+        }  # fmt: skip
+        api, out = JobsApi((404, None)), io.StringIO()
+        with mock.patch.object(R.IO, "GitLedger") as handle, redirect_stdout(out):
+            self.assertEqual(R.main(environ, api=api), 1)  # the production path: ledger_url=None
+        handle.assert_not_called()
+        self.assertEqual(json.loads(out.getvalue()), {"conclusion": None, "code": "LEDGER_KEY_MISSING"})
+        self.assertEqual(api.checks, [])
+
     def test_no_ledger_and_no_key_reports_as_before(self):
         environ = {
             "ACCEPT_TARGET_REPO": "org/target", "ACCEPT_TARGET_REPO_ID": str(REPO_ID),

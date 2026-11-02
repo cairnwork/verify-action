@@ -28,8 +28,9 @@ outputs through ``env:``, never into ``run:``); each is checked for shape before
                              whose signature verifies against its public half (an unhonoured
                              one: LEDGER_VERDICT_UNSIGNED). A configured ledger URL without
                              this key is refused: LEDGER_KEY_MISSING, no check created, no
-                             verdict written, exit 1, the code in the step summary. The App token is for the target repository's
-                             check-run API only, never for reading or writing the ledger.
+                             verdict written, exit 1, the code in the step summary. The App
+                             token is for the target repository's check-run API only, never
+                             for reading or writing the ledger.
 
 Prints one line of JSON with fixed values (conclusion, code). Exit 0 when the decision was carried
 out (including "no check"), 1 otherwise; it never creates a success it did not decide on.
