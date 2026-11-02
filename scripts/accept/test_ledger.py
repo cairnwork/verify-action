@@ -325,6 +325,13 @@ class Table(unittest.TestCase):
                      verdict(2, protection="same_process_only", k=5))
         check = T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1v, written={}, min_protection="partial")
         self.assertEqual(check.code, T.PROTECTION_BELOW_MINIMUM)
+        # per verdict under the partial order, not "lowest by a line, then compare"
+        led = ledger(bind(), claim(1), verdict(1, protection="partial"), claim(2, k=4, sha=SHA1),
+                     verdict(2, protection="blackbox_macos", k=5))
+        check = T.decide_check(led, sha=SHA1, j0_code=None, pr_issue=5, j1=j1v, written={},
+                               min_protection="blackbox_macos")
+        self.assertEqual((check.conclusion, check.code), (T.FAILURE, T.PROTECTION_BELOW_MINIMUM))
+        self.assertEqual(check.protection, "partial")
         # the default is same_process_only
         self.assertEqual(self.decide(ledger(bind(), claim(1), verdict(1)), j1v).conclusion, T.SUCCESS)
 
