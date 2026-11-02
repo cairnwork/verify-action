@@ -32,6 +32,10 @@ inputs:
     description: 'Optional path to Core identity JSON pin file'
     required: false
     default: ''
+  policy:
+    description: 'Receiver policy for v0.2 receipts: JSON text, or an absolute file path outside repo-path. Required when the test commit is not in the repository (confidential mode); under a policy a v0.1 receipt is rejected. Needs a cairnwork-ref that supports v0.2 (at or after 85214150ba903d4126acae73223e965d5e8e1ecc).'
+    required: false
+    default: ''
   cairnwork-ref:
     description: '40-hex commit of cairnwork/cairnwork to install. Must be at or after 5819a8c56e19fb32d597f8213a9961f46c3307d4 (the first with verify --json); older commits fail with VERIFIER_ERROR because they reject --json as an unknown option (argparse exit 2).'
     required: true
@@ -140,6 +144,7 @@ runs:
         INPUT_FETCH_NOTES: ${{ inputs.fetch-notes }}
         INPUT_PUBLIC_KEY: ${{ inputs.public-key }}
         INPUT_CORE_IDENTITY: ${{ inputs.core-identity }}
+        INPUT_POLICY: ${{ inputs.policy }}
         INPUT_CAIRNWORK_REF: ${{ inputs.cairnwork-ref }}
         INPUT_REQUIRE_WHEN: ${{ inputs.require-when }}
         INPUT_PR_LABELS: ${{ inputs.pr-labels }}
