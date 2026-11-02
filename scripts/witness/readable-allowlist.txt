@@ -1,0 +1,5 @@
+# Path categories (see probe.category) the verifier account may read inside the sandbox.
+# Outside the system trees probe.SYSTEM_TREES lists. A category matches an entry when it equals it
+# or lies under it. A readable category not listed here fails the readable-files witness, so a
+# runner image that starts exposing a new place shows up as a failure to review, not a pass.
+# Measured on ubuntu-24.04 (GitHub-hosted); each entry is world-readable system or tool content.

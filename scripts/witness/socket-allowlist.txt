@@ -1,0 +1,3 @@
+# Path categories of pathname unix sockets the verifier account may connect to inside the sandbox.
+# Empty on purpose: Cairnwork's policy makes /run, /var/run and /tmp private and masks the
+# root-equivalent daemon sockets, so any connectable socket is a finding to review.
