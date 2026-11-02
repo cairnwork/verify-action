@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+"""J2's decision table (design v2.2, section 3, "J2 怎麼決定"): pure, no I/O.
+
+J2 reads the ledger itself and does not take J1's word for the ledger. J1's result is used for one
+thing only: the verdict of this run's own unjudged claim. Two steps:
+
+1. ``plan_writes``: which verdict tags to write (this run's claim from J1's result; another run's
+   unjudged claim as ATTEMPT_LOST once that run's J1 job of that attempt has ended).
+2. ``decide_check``: after writing and reading the ledger again right before creating the check,
+   whether to create the required check and with which conclusion (only success or failure).
+
+Stdlib only; run with ``python3 -I``.
+"""
+
+from __future__ import annotations
+
+import os as _os
+import sys as _sys
+
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))  # -I drops the script dir
+
+import json
+from dataclasses import dataclass
+from typing import Any, Callable
+
+import ledger as L
+
+SUCCESS, FAILURE = "success", "failure"
+CONCLUSIONS = (SUCCESS, FAILURE)  # never neutral or skipped: both pass a required check
+
+# other runs' J1 job (of one attempt), as J2 sees it through the API
+FINISHED, RUNNING, UNKNOWN = "FINISHED", "RUNNING", "UNKNOWN"
+
+J1_INCOMPLETE = "J1_INCOMPLETE"
+CODE_UNRECOGNIZED = "CODE_UNRECOGNIZED"
+NO_CHECK_J0 = ("STALE_HEAD", "DRAFT_NOT_RUN")
+J0_CODES = (
+    *NO_CHECK_J0, "FORK_NOT_SUPPORTED", "DEPENDABOT_UNSUPPORTED", "WRONG_TARGET_BRANCH",
+    "NOT_ONE_COMMIT_ON_BASE", "BASE_NOT_IN_TARGET", "DEPENDENCY_CHANGE_UNSUPPORTED", "NO_TASK",
+    "NOT_GITHUB_HOSTED",
+)  # fmt: skip
+# J1's "rejected" codes (S2b): fine prep categories stay in J1's 0600 file; public output has only
+# the two coarse codes TESTS_SETUP_PROBLEM and RUNNER_SETUP_PROBLEM
+COARSE_CODES = ("TESTS_SETUP_PROBLEM", "RUNNER_SETUP_PROBLEM")
+J1_REJECT_CODES = (
+    "INPUT_INVALID", "STALE_HEAD", "NOT_ONE_COMMIT_ON_BASE", "BASE_NOT_IN_TARGET",
+    "DEPENDENCY_CHANGE_UNSUPPORTED", "NO_COMMIT", "OUT_OF_SCOPE", "PROTECTED_PATH",
+    "TASK_NOT_FOUND", "TASK_NOT_ASSIGNED", "TASK_RETIRED", "TESTS_ALREADY_PUBLIC",
+    L.LEDGER_NOT_CONFIGURED, L.LEDGER_UNAVAILABLE, L.SHA_BOUND_ELSEWHERE, L.PRIOR_VERDICT,
+    L.ATTEMPT_PENDING, L.ATTEMPTS_EXHAUSTED, *COARSE_CODES,
+)  # fmt: skip
+J1_SCHEMA = "cairnwork-accept-j1/1"
+_J1_KEYS = {"schema", "run_id", "j1_attempt", "head_sha", "outcome", "code"}
+_J1_RAN_KEYS = {*_J1_KEYS, "status", "protection", "tests_consumed"}
+
+
+def _tables() -> tuple[frozenset[str], frozenset[str]]:
+    try:
+        import redact_result as R  # the fixed tables of S2a
+    except ImportError:  # pragma: no cover - shipped side by side
+        return frozenset(), frozenset()
+    codes = frozenset(c for t in R.CODES_BY_STATUS.values() for c in t) | frozenset(R.OWN_CODES)
+    return codes, frozenset(R.PROTECTION_OUTPUTS)
+
+
+RUN_CODES, PROTECTIONS = _tables()
+KNOWN_CODES = frozenset(
+    (*J0_CODES, *J1_REJECT_CODES, J1_INCOMPLETE, L.LEDGER_CONFLICT, L.ATTEMPT_LOST, "VERIFIED",
+     L.LEDGER_UNAVAILABLE)
+) | RUN_CODES
+
+
+def public_protection(protection: str) -> str:
+    return protection if protection in PROTECTIONS else "unrecognized"
+
+
+def public_code(code: str) -> str:
+    """Only fixed values reach the check: anything outside the tables is CODE_UNRECOGNIZED."""
+    return code if code in KNOWN_CODES else CODE_UNRECOGNIZED
+
+
+@dataclass(frozen=True)
+class J1:
+    """What J2 knows about J1: the job conclusion and its whitelisted result (None if missing or
+    unparseable). ``attempt`` is J1's attempt from the result, or else from the jobs API."""
+
+    job_success: bool
+    result: dict[str, Any] | None
+    attempt: int | None
+
+    @property
+    def complete(self) -> bool:
+        return self.job_success and self.result is not None
+
+
+def parse_j1(text: str | None, *, run_id: int, sha: str) -> dict[str, Any] | None:
+    """J1's one-line result, strictly; None when missing, unparseable, or not about this run and
+    sha (that is J1_INCOMPLETE, never a guess)."""
+    if not text:
+        return None
+    try:
+        obj = L.strict_json(text.strip())
+    except L.LedgerUnreadable:
+        return None
+    outcome = obj.get("outcome")
+    keys = _J1_RAN_KEYS if outcome == "ran" else _J1_KEYS if outcome == "rejected" else None
+    if keys is None or set(obj) != keys or obj["schema"] != J1_SCHEMA:
+        return None
+    ints_ok = all(type(obj[k]) is int and 1 <= obj[k] < 2**53 for k in ("run_id", "j1_attempt"))
+    if not ints_ok or obj["run_id"] != run_id or obj["head_sha"] != sha:
+        return None
+    if type(obj["code"]) is not str or not L._CODE.match(obj["code"]):
+        return None
+    if outcome == "ran":
+        ok = obj["status"] in L.RUN_STATUSES and type(obj["tests_consumed"]) is bool
+        ok = ok and type(obj["protection"]) is str and L._PROTECTION.match(obj["protection"])
+        if not ok:
+            return None
+    elif obj["code"] not in J1_REJECT_CODES:
+        return None
+    return obj
+
+
+@dataclass(frozen=True)
+class Write:
+    version: str
+    n: int
+    meaning: dict[str, str]  # head_sha, status, code, protection
+    own: bool
+
+
+def _own_verdict(sha: str, j1: J1) -> dict[str, str]:
+    r = j1.result
+    if not j1.complete or r is None:
+        return _meaning(sha, L.ATTEMPT_LOST, J1_INCOMPLETE, "none")
+    if r["outcome"] == "rejected":  # a claim exists but J1 says it never ran: counted (design)
+        return _meaning(sha, L.ATTEMPT_LOST, public_code(r["code"]), "none")
+    code = public_code(r["code"])
+    if r["tests_consumed"] is False:
+        return _meaning(sha, L.NOT_CONSUMED, code, r["protection"])
+    return _meaning(sha, r["status"], code, r["protection"])
+
+
+def _meaning(sha: str, status: str, code: str, protection: str) -> dict[str, str]:
+    return {"head_sha": sha, "status": status, "code": code, "protection": protection}
+
+
+def plan_writes(
+    ledger: L.Ledger, sha: str, run_id: int, j1: J1, status_of: Callable[[int, int], str]
+) -> list[Write]:
+    """Verdicts to write for the sha's unjudged claims. A claim is this run's own when its run id
+    and J1 attempt are ours; another run's claim is closed only once that attempt's J1 ended."""
+    writes = []
+    for (version, n), claim in L.pending_claims(ledger, sha):
+        if claim.run_id == run_id and j1.attempt is not None and claim.j1_attempt == j1.attempt:
+            writes.append(Write(version, n, _own_verdict(sha, j1), own=True))
+        elif status_of(claim.run_id, claim.j1_attempt) == FINISHED:
+            lost = _meaning(sha, L.ATTEMPT_LOST, L.ATTEMPT_LOST, "none")
+            writes.append(Write(version, n, lost, own=False))
+    return writes
+
+
+@dataclass(frozen=True)
+class Check:
+    conclusion: str | None  # None: create no required check
+    code: str
+    issue: int | None = None  # bound issue for the title
+    version: str | None = None
+    protection: str = "none"
+    note_bound_issue: int | None = None  # set: create the separate, non-required note check
+
+    def __post_init__(self) -> None:
+        if self.conclusion is not None and self.conclusion not in CONCLUSIONS:
+            raise ValueError("conclusion")
+
+
+def decide_check(
+    ledger: L.Ledger | None,
+    *,
+    sha: str,
+    j0_code: str | None,
+    pr_issue: int | None,
+    j1: J1,
+    written: dict[tuple[str, int], str],
+    ledger_error: str = L.LEDGER_UNAVAILABLE,
+) -> Check:
+    """``ledger``: read again after the writes, right before creating the check (None: could
+    not read it). ``written``: (version, n) -> outcome of each own-claim verdict write this J2
+    attempted (CREATED, SAME, LEDGER_CONFLICT, LEDGER_UNAVAILABLE)."""
+    if j0_code in NO_CHECK_J0:  # row 1
+        return Check(None, j0_code)
+    if ledger is None:  # row 2
+        return Check(FAILURE, public_code(ledger_error))
+    bind = ledger.binds.get(sha)
+    note = bind.issue if bind is not None and pr_issue is not None and bind.issue != pr_issue else None
+    title = {
+        "issue": bind.issue if bind is not None else pr_issue,
+        "version": bind.tests_version if bind is not None else None,
+        "note_bound_issue": note,
+    }
+    if L.pending_claims(ledger, sha):  # row 7 (and an own write that did not land)
+        if any(o == L.LEDGER_CONFLICT for o in written.values()):
+            return Check(FAILURE, L.LEDGER_CONFLICT, **title)
+        if any(k in written for k, _ in L.pending_claims(ledger, sha)):
+            return Check(FAILURE, L.LEDGER_UNAVAILABLE, **title)
+        return Check(None, L.ATTEMPT_PENDING, **title)  # its owner (or a later J2) reports
+    verdicts = L.counted_verdicts(ledger, sha)
+    own = [ledger.verdicts[k] for k in written if k in ledger.verdicts]
+    if any(o == L.LEDGER_CONFLICT for o in written.values()):
+        return Check(FAILURE, L.LEDGER_CONFLICT, **title)
+    if verdicts:  # rows 3-6: the sha's counted verdicts decide, any non-VERIFIED fails
+        protections = {v.protection for v in verdicts}
+        if L.aggregate(verdicts):
+            protection = protections.pop() if len(protections) == 1 else "none"
+            return Check(SUCCESS, "VERIFIED", protection=protection, **title)
+        mine = [v for v in own if L.counted(v) and v.status != "VERIFIED"]
+        code = mine[0].code if mine else L.PRIOR_VERDICT
+        return Check(FAILURE, public_code(code), **title)
+    returned = [v for v in own if not L.counted(v)]
+    if returned:  # row 4: our claim was not used up; the sha can be resumed
+        return Check(FAILURE, public_code(returned[0].code), **title)
+    if j0_code is not None:  # row 8
+        return Check(FAILURE, public_code(j0_code), **title)
+    if not j1.complete or j1.result is None:  # row 10
+        return Check(FAILURE, J1_INCOMPLETE, **title)
+    if j1.result["outcome"] == "ran":  # J1 says it ran, but no claim of this run: never trusted
+        return Check(FAILURE, L.LEDGER_CONFLICT, **title)
+    code = j1.result["code"]
+    if code == L.SHA_BOUND_ELSEWHERE:  # row 9: no required check; the note check shows why
+        return Check(None, code, **title)
+    if code in NO_CHECK_J0:  # J1 saw the head move on: the newer run reports, as for J0
+        return Check(None, code, **title)
+    return Check(FAILURE, public_code(code), **title)
+
+
+def render_j1(obj: dict[str, Any]) -> str:
+    """For tests and for J1's own use: the canonical one-line form of a J1 result."""
+    return json.dumps(obj, ensure_ascii=True, separators=(",", ":"), sort_keys=True)

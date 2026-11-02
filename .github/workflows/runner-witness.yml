@@ -1,0 +1,82 @@
+name: Runner witness
+
+# S1 of the PR-acceptance design: on a GitHub-hosted ubuntu-24.04 runner, code run as Cairnwork's
+# dedicated verifier account inside Cairnwork's own bwrap policy cannot read where the runner keeps
+# secrets, cannot reach the network, leaves no lasting process or job, and has no sudo. Every check
+# also runs as the runner account outside the sandbox (the baseline) and must see there what the
+# sandbox must not; a baseline that sees nothing fails the job. This is a witness job, not an
+# acceptance entry point: it uses no secrets.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runner-witness-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  witness:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # Cairnwork main, pinned: its bwrap policy, verifier-account wrapper and account setup script.
+      CAIRNWORK_REF: 36b569240b896878c23153927c27781755af9e3c
+    steps:
+      - name: Checkout verify-action
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Judge self-test (fixed inputs; a soft judge fails here)
+        run: /usr/bin/python3 -I -B scripts/witness/test_judge.py
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6 (commit)
+        with:
+          enable-cache: false
+
+      - name: Install bubblewrap
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q bubblewrap
+          bwrap --version
+
+      - name: Lift the AppArmor userns restriction (end users load a profile instead)
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install Cairnwork at the pinned commit (owner-only directory)
+        run: |
+          umask 077
+          src="$RUNNER_TEMP/cw-src"
+          mkdir -p "$src"
+          git -C "$src" init -q
+          git -C "$src" fetch -q --depth 1 -- https://github.com/cairnwork/cairnwork.git "$CAIRNWORK_REF"
+          git -C "$src" checkout -q FETCH_HEAD
+          test "$(git -C "$src" rev-parse HEAD)" = "$CAIRNWORK_REF"
+          uv sync --frozen --no-dev --project "$src" --python /usr/bin/python3
+
+      - name: Create the verifier account (Cairnwork's own script)
+        run: sudo sh "$RUNNER_TEMP/cw-src/scripts/setup_verifier_user_linux.sh" "$USER"
+
+      - name: Plant canaries
+        id: plant
+        run: /usr/bin/python3 -I scripts/witness/plant.py
+
+      - name: Witness
+        env:
+          CW_OUT_CANARY: ${{ steps.plant.outputs.out_canary }}
+        run: |
+          # The next line puts a canary into this step's script file (masked in the log).
+          # ${{ steps.plant.outputs.script_canary }}
+          umask 077
+          printf 'CW_WITNESS_ENV_LATE=%s\n' "$CW_WITNESS_ENV" >> "$GITHUB_ENV"
+          printf 'late=%s\n' "$CW_OUT_CANARY" >> "$GITHUB_OUTPUT"
+          "$RUNNER_TEMP/cw-src/.venv/bin/python" -I scripts/witness/witness.py \
+            --probe scripts/witness/probe.py \
+            --allowlist scripts/witness/readable-allowlist.txt \
+            --socket-allowlist scripts/witness/socket-allowlist.txt \
+            --step-script "$0"
