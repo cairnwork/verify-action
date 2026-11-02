@@ -29,8 +29,9 @@ name: Cairnwork accept
 # could not judge (#35); the key itself is never named in J1's job.
 #
 # Verdict tags are signed by the verdict key (J2 signs every verdict commit) and J2 honours only
-# verdicts whose signature verifies against that key; an unsigned or other-key verdict reads as no
-# verdict (LEDGER_VERDICT_UNSIGNED). The ledger ruleset on verdict/** is defence in depth: it does
+# verdicts whose signature verifies against that key; an unsigned or other-key verdict is not
+# honoured: J2 fails the check with LEDGER_VERDICT_UNSIGNED (J1 refuses the sha as
+# LEDGER_VERDICT_STRANDED). The ledger ruleset on verdict/** is defence in depth: it does
 # not restrict deploy-key pushes, so the reader does the proving.
 #
 # With no ledger repository or no claim key, J1 stops with LEDGER_NOT_CONFIGURED before fetching anything.

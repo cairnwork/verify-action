@@ -18,11 +18,14 @@ Steps (v2.2 section 3, "J1 的順序"):
    target branch (``BASE_NOT_IN_TARGET``), no dependency file touched. Tests repo: the tree plus
    ``task.json`` only (blobless clone) -> test version (tree id of ``tasks/<N>/tests``), author and
    retirement checks.
-3. Ledger read (``ledger_io.j1_check``, S3).
+3. Two non-consuming prechecks that read only the fetched objects, before the ledger read so a
+   refusal of this run still reaches J2 even when the sha has an earlier verdict (PRIOR_VERDICT
+   would otherwise hide it): no test blob in the PR head or the target branch
+   (``TESTS_ALREADY_PUBLIC``), then scope and protected paths with Cairnwork's own functions.
+   Then the ledger read (``ledger_io.j1_check``, S3).
 4. Toolchain for the verifier account: the target's locked dependencies from head^ (wheels with
    hashes only) or, with none, the pinned pytest set.
-5. Non-consuming prechecks: scope and protected paths with Cairnwork's own functions; no test blob
-   in the PR head or the target branch (``TESTS_ALREADY_PUBLIC``); account, firewall, limits.
+5. Host precheck (``precheck_host``, runs after the ledger read): account, firewall, limits.
 6. Fetch the overlay blobs, synthesise the test commit on head^, check it with Cairnwork's own
    ``test_paths``, bundle it, ``import-tests``. The tests key file is deleted here.
 7-8. Bind and claim in the ledger (``ledger_io.j1_claim``); the claim key file is deleted

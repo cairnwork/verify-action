@@ -13,8 +13,9 @@ outputs through ``env:``, never into ``run:``); each is checked for shape before
     ACCEPT_J1_JOB_RESULT     needs.<J1>.result (success, failure, cancelled, skipped)
     ACCEPT_J1_RESULT         J1's one-line result (may be empty)
     ACCEPT_J1_JOB_NAME       J1's job name, to find its attempt and status through the API
-    ACCEPT_LEDGER_URL        ledger repository (https://github.com/<owner>/<name>.git or
-                             git@github.com:<owner>/<name>.git); empty: LEDGER_NOT_CONFIGURED
+    ACCEPT_LEDGER_URL        ledger repository, SSH form git@github.com:<owner>/<name>.git (the
+                             https form passes the shape check but carries no credential, so
+                             it can only end as LEDGER_UNAVAILABLE); empty: LEDGER_NOT_CONFIGURED
     ACCEPT_MAX_ATTEMPTS      the attempt budget J2 enforces itself (1-20; absent: not enforced here)
     ACCEPT_MIN_PROTECTION    lowest protection level a VERIFIED may have (j2_table.PROTECTION_LEVELS;
                              empty: same_process_only); a lower or unknown level fails the check
@@ -23,7 +24,7 @@ outputs through ``env:``, never into ``run:``); each is checked for shape before
                              job state)
     ACCEPT_LEDGER_KEY        verdict deploy key of the ledger repository (private key text);
                              written to owner-only files for the git calls and deleted after
-                             use, never printed and never in argv. It wins over the tokens.
+                             use, never printed and never in argv. It is the only ledger credential (SSH key; no token path).
                              J2 signs every verdict commit with it and honours only verdicts
                              whose signature verifies against its public half (an unhonoured
                              one: LEDGER_VERDICT_UNSIGNED). A configured ledger URL without
