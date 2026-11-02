@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""J2: read the ledger with the App token, write verdicts, read again, create the check.
+"""J2: read the ledger, write verdicts, read again, create the check.
 
 Thin layer around ``j2_table.py``. Inputs come from the environment only (the workflow passes job
 outputs through ``env:``, never into ``run:``); each is checked for shape before use:
@@ -13,13 +13,16 @@ outputs through ``env:``, never into ``run:``); each is checked for shape before
     ACCEPT_J1_JOB_RESULT     needs.<J1>.result (success, failure, cancelled, skipped)
     ACCEPT_J1_RESULT         J1's one-line result (may be empty)
     ACCEPT_J1_JOB_NAME       J1's job name, to find its attempt and status through the API
-    ACCEPT_LEDGER_URL        ledger repository (https://github.com/<owner>/<name>.git); empty:
-                             LEDGER_NOT_CONFIGURED
+    ACCEPT_LEDGER_URL        ledger repository (https://github.com/<owner>/<name>.git or
+                             git@github.com:<owner>/<name>.git); empty: LEDGER_NOT_CONFIGURED
     ACCEPT_CHECK_NAME, ACCEPT_NOTE_CHECK_NAME   names of the required and the note check
     ACCEPT_APP_TOKEN         App installation token for the target repository (check runs,
                              job state)
-    ACCEPT_LEDGER_TOKEN      App installation token for the ledger repository (contents
-                             write there only); empty: ACCEPT_APP_TOKEN is used for both
+    ACCEPT_LEDGER_KEY        verdict deploy key of the ledger repository (private key text);
+                             written to owner-only files for the git calls and deleted after
+                             use, never printed and never in argv. It wins over the tokens.
+    ACCEPT_LEDGER_TOKEN      optional (tests, compatibility): App installation token for the
+                             ledger repository; empty: ACCEPT_APP_TOKEN is used for both
 
 Prints one line of JSON with fixed values (conclusion, code). Exit 0 when the decision was carried
 out (including "no check"), 1 otherwise; it never creates a success it did not decide on.
@@ -35,11 +38,14 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))  # -I drops th
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from typing import Any
 
+import j1_git as jg
 import j2_table as T
 import ledger as L
 import ledger_io as IO
@@ -47,7 +53,7 @@ import ledger_io as IO
 _REPO = re.compile(r"[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\Z")
 _INT = re.compile(r"[1-9][0-9]{0,15}\Z")
 _NAME = re.compile(r"[A-Za-z0-9 _./()-]{1,100}\Z")
-_HTTPS_URL = re.compile(r"https://github\.com/[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\.git\Z")
+_HTTPS_URL = re.compile(r"(?:https://github\.com/|git@github\.com:)[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}\.git\Z")
 API = "https://api.github.com"
 
 
@@ -167,6 +173,7 @@ def read_env(environ: dict[str, str]) -> dict[str, Any] | None:
         "ledger_url": get("ACCEPT_LEDGER_URL"), "check_name": get("ACCEPT_CHECK_NAME"),
         "note_check_name": get("ACCEPT_NOTE_CHECK_NAME"), "token": get("ACCEPT_APP_TOKEN"),
         "ledger_token": get("ACCEPT_LEDGER_TOKEN") or get("ACCEPT_APP_TOKEN"),
+        "ledger_key": get("ACCEPT_LEDGER_KEY"),
     }  # fmt: skip
 
 
@@ -196,6 +203,23 @@ def run(env: dict[str, Any], api: Api, io: IO.GitLedger | None) -> T.Check:
     return T.decide_check(ledger, written=written, **common)
 
 
+def open_ledger(url: str, repo_id: int, key: str, token: str) -> tuple[IO.GitLedger, str | None]:
+    """The ledger handle and the private key dir (None on the token path). A key wins."""
+    if not key:
+        return IO.GitLedger(url, repo_id, token=token), None
+    key_dir = tempfile.mkdtemp(prefix="j2-key-")  # 0700
+    try:
+        ssh_key, known_hosts = os.path.join(key_dir, "ledger"), os.path.join(key_dir, "known_hosts")
+        for path, text in ((ssh_key, key.strip() + "\n"), (known_hosts, jg.GITHUB_KNOWN_HOSTS)):
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                handle.write(text)
+        return IO.GitLedger(url, repo_id, ssh_key=ssh_key, known_hosts=known_hosts), key_dir
+    except BaseException:
+        shutil.rmtree(key_dir, ignore_errors=True)
+        raise
+
+
 def main(environ: dict[str, str], api: Any = None, ledger_url: str | None = None) -> int:
     """``api`` and ``ledger_url`` are for tests only (a fake API, a local ledger repository)."""
     env = read_env(environ)
@@ -204,12 +228,14 @@ def main(environ: dict[str, str], api: Any = None, ledger_url: str | None = None
         return 1
     api = api or Api(env["repo"], env["token"])
     url = ledger_url or env["ledger_url"]
-    io = IO.GitLedger(url, env["repo_id"], token=env["ledger_token"]) if url else None
+    io, key_dir = open_ledger(url, env["repo_id"], env["ledger_key"], env["ledger_token"]) if url else (None, None)
     try:
         check = run(env, api, io)
     finally:
         if io is not None:
             io.close()
+        if key_dir is not None:
+            shutil.rmtree(key_dir, ignore_errors=True)  # the key file is gone before the check call
     ok = create_checks(api, env, check)
     print(json.dumps({"conclusion": check.conclusion, "code": T.public_code(check.code)},
                      separators=(",", ":")))  # fmt: skip

@@ -14,13 +14,15 @@ name: Cairnwork accept
 #       uses: cairnwork/verify-action/.github/workflows/accept.yml@<40-hex>
 #       with: {tests-repo: ..., ledger-repo: ..., verify-action-sha: <same 40-hex>,
 #              target-branch: main, max-attempts: 3, report-app-client-id: ...}
-#       secrets: {TESTS_KEY: ..., LEDGER_KEY: ..., REPORT_APP_KEY: ...}
+#       secrets: {TESTS_KEY: ..., LEDGER_KEY: ..., LEDGER_VERDICT_KEY: ..., REPORT_APP_KEY: ...}
 #
 # Who holds what (design v2.2 section 2): J0 has no environment and no secret, only a read-only
 # token, and reads API metadata of the PR. J1 (environment cairnwork-verify: tests key, ledger
 # claim key) is scheduled only when J0 let the PR through; a PR from another account comes from a
-# fork and J0 stops it. J2 (environment cairnwork-report: the report App key) never runs PR code;
-# it reads the ledger itself and creates the required check with the App's token. With no ledger
+# fork and J0 stops it. J2 (environment cairnwork-report: the report App key and the ledger verdict
+# deploy key) never runs PR code; it reads and writes the ledger itself over SSH with the verdict
+# key and creates the required check with the App's token. The report App needs checks write,
+# actions read, contents read and metadata; no App permission grows for the ledger. With no ledger
 # repository or no claim key, J1 stops with LEDGER_NOT_CONFIGURED before fetching anything.
 
 on:
@@ -60,6 +62,9 @@ on:
         required: true
       LEDGER_KEY:
         description: "Claim deploy key of the ledger repository"
+        required: false
+      LEDGER_VERDICT_KEY:
+        description: "Verdict deploy key of the ledger repository"
         required: false
       REPORT_APP_KEY:
         description: "Private key of the report App"
@@ -187,7 +192,7 @@ jobs:
         run: /usr/bin/python3 -I .cw-accept/scripts/accept/j1_emit.py "$CW_PRIVATE"
 
   report:
-    # J2: runs whatever J0 and J1 did; never runs PR code. Reads the ledger with the App's token,
+    # J2: runs whatever J0 and J1 did; never runs PR code. Reads the ledger with the verdict key,
     # writes the verdict, reads again and creates the required check (success or failure only).
     needs: [gate, verify]
     if: always()
@@ -231,17 +236,6 @@ jobs:
           permission-checks: write
           permission-actions: read
 
-      - name: App token for the ledger repository (tags)
-        id: ledger
-        if: inputs.ledger-repo != ''
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
-        with:
-          client-id: ${{ inputs.report-app-client-id }}
-          private-key: ${{ secrets.REPORT_APP_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: ${{ steps.names.outputs.ledger-name }}
-          permission-contents: write
-
       - name: Report
         env:
           ACCEPT_TARGET_REPO: ${{ github.repository }}
@@ -253,9 +247,9 @@ jobs:
           ACCEPT_J1_JOB_RESULT: ${{ needs.verify.result }}
           ACCEPT_J1_RESULT: ${{ needs.verify.outputs.result }}
           ACCEPT_J1_JOB_NAME: verify
-          ACCEPT_LEDGER_URL: ${{ inputs.ledger-repo != '' && format('https://github.com/{0}.git', inputs.ledger-repo) || '' }}
+          ACCEPT_LEDGER_URL: ${{ inputs.ledger-repo != '' && (secrets.LEDGER_VERDICT_KEY != '' && format('git@github.com:{0}.git', inputs.ledger-repo) || format('https://github.com/{0}.git', inputs.ledger-repo)) || '' }}
           ACCEPT_CHECK_NAME: cairnwork-accept
           ACCEPT_NOTE_CHECK_NAME: cairnwork-accept-note
           ACCEPT_APP_TOKEN: ${{ steps.app.outputs.token }}
-          ACCEPT_LEDGER_TOKEN: ${{ steps.ledger.outputs.token }}
+          ACCEPT_LEDGER_KEY: ${{ secrets.LEDGER_VERDICT_KEY }}
         run: /usr/bin/python3 -I .cw-accept/scripts/accept/j2_report.py
