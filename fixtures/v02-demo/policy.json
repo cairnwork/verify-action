@@ -1,0 +1,17 @@
+{
+  "core_identity": {
+    "build_identity": "EMBEDDED",
+    "build_source_digest": "sha256:cab84f70d8b6af705c51f58314e83f8dfca9e7c122395632f5648dff4b99a744",
+    "distribution": "nexus-certify",
+    "git_commit": "b07ae36d64501af761e8f2069830b79f89ac733b",
+    "git_dirty": false,
+    "git_tree": "a643a7048174e9dc843bec5aa13c145efded5a27",
+    "schema": "nexus.core.core-identity.v1-experimental",
+    "source_digest": "sha256:cab84f70d8b6af705c51f58314e83f8dfca9e7c122395632f5648dff4b99a744",
+    "source_matches_build": true,
+    "version": "0.3.0"
+  },
+  "key_id": "5480e1004f9a82db2138ba1209dd3f59686c8a6ba2ffd8611a521fd266970cf7",
+  "rule": "overlay-v1",
+  "test_commit": "e818bda98526a1347d7116821f8ba6d5bb5e503a"
+}
