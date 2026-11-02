@@ -138,10 +138,15 @@ def _ok(argv: list[str], timeout: float = 300) -> bool:
 def post_run_paths(private: Path) -> list[str]:
     """What J1 still uses once the candidate has run (j1_verify.run after run_core; j1_emit)."""
     cw = private / "cw-src" / ".venv"
+    # the system interpreter's site directories (its .pth files run even under -I) that exist
+    done = subprocess.run(["/usr/bin/python3", "-I", "-c", "import json, site; print(json.dumps(site.getsitepackages()))"],
+                          capture_output=True, text=True, check=True, timeout=60)  # fmt: skip
+    sites = {p for p in json.loads(done.stdout) if os.path.isdir(p)}
     return sorted({
         os.path.realpath("/usr/bin/python3"), sysconfig.get_paths()["stdlib"],
         os.path.realpath(cw / "bin" / "python"), str(cw), str(HERE), str(private),
-        "/usr/bin/sudo", "/usr/bin/pgrep", "/bin/kill", "/usr/bin/systemd-run",
+        "/usr/bin/sudo", "/usr/bin/pgrep", "/bin/kill", "/usr/bin/systemd-run", "/usr/lib/git-core",
+        *sites,
     })  # fmt: skip
 
 

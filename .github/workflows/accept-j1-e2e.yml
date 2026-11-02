@@ -40,7 +40,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6 (commit)
         with:
           enable-cache: false
 
@@ -76,6 +76,11 @@ jobs:
       checks: read
       contents: read
     steps:
+      - name: Checkout verify-action
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
       - name: The e2e job's log and annotations hold no canary
         env:
           GH_TOKEN: ${{ github.token }}
@@ -86,7 +91,10 @@ jobs:
         run: |
           set -eu
           test "$E2E_RESULT" = "success"
-          canary="$(python3 -I -c 'import hashlib,os; print("cnry" + hashlib.sha256(("cw-j1-e2e:%s.%s" % (os.environ["RUN_ID"], os.environ["RUN_ATTEMPT"])).encode()).hexdigest()[:24])')"
+          # the canary and the minimum check count come from e2e_j1.py itself (one source)
+          canary="$(python3 -I scripts/accept/e2e_j1.py --canary "$RUN_ID.$RUN_ATTEMPT")"
+          min_checks="$(python3 -I scripts/accept/e2e_j1.py --min-checks)"
+          test "${#canary}" -eq 28
           api() { curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$@"; }
           job="$(api "https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" \
             | python3 -I -c 'import json,sys; print([j["id"] for j in json.load(sys.stdin)["jobs"] if j["name"] == "e2e"][0])')"
@@ -98,6 +106,8 @@ jobs:
             test "$try" -lt 6 || { echo "e2e log not available"; exit 1; }
             sleep 10
           done
+          checks="$(grep -o -E "J1 e2e: [0-9]+ checks, 0 failed" "$RUNNER_TEMP/e2e.log" | head -n 1 | cut -d' ' -f3)"
+          test "$checks" -ge "$min_checks" || { echo "too few e2e checks"; exit 1; }
           api "https://api.github.com/repos/$REPO/check-runs/$job/annotations" > "$RUNNER_TEMP/e2e-annotations.json"
           for file in e2e.log e2e-annotations.json; do
             if grep -q -F "$canary" "$RUNNER_TEMP/$file"; then
